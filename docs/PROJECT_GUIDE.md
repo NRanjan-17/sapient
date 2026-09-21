@@ -795,5 +795,23 @@ See `docs/BENCHMARKS.md` for methodology, reproducibility instructions, and a fu
 comparison table. The short story: SAPIENT wins on TTFT, peak RAM, binary size, and cold-start
 latency; Ollama wins on sustained tok/s for larger models (acknowledged openly in the report).
 
+### Engineering analyses (`reports/`)
+
+One-off investigations that answer a specific question and then stay put as a record.
+They are dated and pinned to a commit; when they disagree with the code, the code wins.
+
+- [`reports/C-REWRITE-FEASIBILITY.md`](../reports/C-REWRITE-FEASIBILITY.md) — would
+  rewriting hot paths in C make SAPIENT faster or leaner? (Short answer: no — Rust and
+  C share the LLVM backend and the kernels already use NEON intrinsics + inline `asm!`.
+  The one real C opportunity is *linking* Arm's KleidiAI on aarch64; the biggest speed
+  and memory wins left are both in Rust.)
+- [`reports/TEST-RUN-M2-2026-09-22.md`](../reports/TEST-RUN-M2-2026-09-22.md) — full
+  suite run on an Apple M2 (322 passed, 0 failed). Surfaced three gaps: the whole-model
+  **wgpu coherence gates don't run in CI** (feature-gated, CI passes no `--features`), the
+  MLX backend test likewise, and `tests/integration/mlp_test.rs` is orphaned by the
+  workspace-only root `Cargo.toml`.
+
+---
+
 *Happy hacking! If anything here ever stops matching the code, the code wins — please open
 a PR to fix the docs.* 🦜
