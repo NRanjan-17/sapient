@@ -822,6 +822,15 @@ See `docs/BENCHMARKS.md` for methodology, reproducibility instructions, and a fu
 comparison table. The short story: SAPIENT wins on TTFT, peak RAM, binary size, and cold-start
 latency; Ollama wins on sustained tok/s for larger models (acknowledged openly in the report).
 
+### Findings
+
+- [`docs/C_AND_RUST_FINDINGS.md`](C_AND_RUST_FINDINGS.md) — **meeting brief, plain
+  English.** What the C ABI is and how it was tested (334 workspace tests, a 32-case
+  C conformance suite, zero memory leaks); the measured Rust-vs-C++ result (+5.5%
+  end to end, 1.000x on the second kernel, ~40% recoverable in Rust); three failed
+  optimisation attempts; the benchmarking method and its pitfalls; and why a port is
+  not recommended while the C *interface* clearly is.
+
 ### Proposals
 
 - [`docs/C-ECOSYSTEM.md`](C-ECOSYSTEM.md) — **proposal, not implemented.** What it would

@@ -2,6 +2,21 @@
 
 > **Analysis date:** 2026-09-22 · **Codebase:** SAPIENT v0.6.0 (`main`, commit `a0965a5`)
 > **Question asked:** *"What part of SAPIENT can I modify in C so it becomes faster and more memory efficient?"*
+> ## CORRECTION (2026-09-22) — a load-bearing claim below is WRONG
+>
+> §1.1 argues that Rust and C share the LLVM backend and therefore "identical
+> source logic yields identical machine code," so no language-level speedup
+> exists. **Measurement disproves this.** A C++ transliteration of
+> `dot_q4_k_4rows_r4_q8k_neon` measured **1.298x** — clang emitted 4x the `sdot`
+> per loop body and 30 fewer branches than rustc. Shared LLVM guarantees the same
+> *instruction set*, not the same *optimisation decisions*.
+>
+> **The recommendation still stands, for a different reason:** the difference is
+> small end-to-end (+5.5%), roughly 40% of it is recoverable by ordinary Rust
+> edits, and the other hot kernel measured exactly 1.000x. See
+> [`docs/C_AND_RUST_FINDINGS.md`](../docs/C_AND_RUST_FINDINGS.md) for the full
+> study, and `benchmarks/lang-comparison/` for the code and raw data.
+>
 > **Update (2026-09-22):** the suite has since been run — see
 > [`TEST-RUN-M2-2026-09-22.md`](TEST-RUN-M2-2026-09-22.md). **322 passed, 0 failed.**
 > It corrects the test counts in §0 below and confirms the conclusion here is unchanged
@@ -50,10 +65,17 @@ Two things are worth stating plainly, because they shaped the conclusion:
 
 Three independent reasons, all verifiable in this repository.
 
-### 1.1 Same compiler backend
+### 1.1 Same compiler backend ~~— OVERTURNED, see the correction above~~
 
-Rust and C both compile through LLVM. Identical source logic yields identical
-machine code. There is no language-level speedup available.
+> **This subsection is wrong and is kept only so the correction has something to
+> point at.** Measured: the two compilers make different optimisation decisions
+> from the same logic, worth 1.298x on the hottest kernel.
+
+Rust and C both compile through LLVM. ~~Identical source logic yields identical
+machine code. There is no language-level speedup available.~~ Shared LLVM
+guarantees the same *available instructions*; inlining, unrolling and
+vectorisation heuristics differ between the two front ends and their LLVM
+versions.
 
 ### 1.2 The hot kernels are *already* written the way C would be
 

@@ -1,0 +1,25 @@
+[package]
+name        = "sapient-lang-harness"
+description = "Rust-vs-C++ kernel harness: shared fixtures, bit-identity gate, Criterion benches"
+version     = "0.6.0"
+edition     = "2021"
+license     = "AGPL-3.0-only"
+publish     = false
+
+[dependencies]
+sapient-backends-cpu = { path = "../../../../crates/sapient-backends/cpu" }
+sapient-cpp-kernels  = { path = "../cpp-kernels" }
+half                 = { version = "2.3", features = ["bytemuck"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "kernels"
+harness = false
+
+[profile.bench]
+inherits      = "release"
+lto           = "fat"
+codegen-units = 1
+debug         = true
