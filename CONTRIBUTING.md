@@ -142,13 +142,17 @@ crates/
 ├── sapient-generate/       # Pipeline API (from_pretrained, chat, stream) + TranscribePipeline + SpeakPipeline
 ├── sapient-ffi/            # Embedding surface: UniFFI → Swift/Kotlin bindings
 │                           #   (staticlib/cdylib for iOS/Android; see docs/MOBILE.md)
+├── sapient-capi/           # Stable C ABI: libsapient + include/sapient.h — what
+│                           #   Python/Go/Node/C#/Java/Julia/Zig bind to. Hand-written,
+│                           #   NOT UniFFI's generated ABI. See docs/C-ECOSYSTEM.md
 └── sapient-cli/            # `sapient` binary (chat REPL uses a rustyline line
                             #   editor + markdown.rs live Markdown/code rendering)
 
 sdks/typescript/            # @openhorizon-labs/sapient — TS SDK for Node.js/React Native
                             #   (talks to `sapient serve`; npm test = tsc + node --test)
 examples/                   # Sample chat apps: swift-chat (SwiftUI macOS+iOS),
-                            #   android-chat (Compose), react-native-chat (Expo)
+                            #   android-chat (Compose), react-native-chat (Expo),
+                            #   c-chat (30-line C client + link canary)
 install.sh / install.ps1    # Install scripts (attached to releases)
 Formula/sapient.rb          # Homebrew formula template
 .github/workflows/          # CI and release automation
@@ -493,6 +497,40 @@ Rm {
 ```
 
 ---
+
+## Changing the C ABI
+
+`crates/sapient-capi` is a **published contract**. Other people's programs link against
+it, so a careless rename breaks them at their build, not ours.
+
+Three things must stay in agreement, and `cargo test -p sapient-capi` fails until they do:
+
+1. the `#[no_mangle] extern "C"` functions in `crates/sapient-capi/src/lib.rs`,
+2. the declarations in `crates/sapient-capi/include/sapient.h`,
+3. the `EXPECTED_SYMBOLS` snapshot in `crates/sapient-capi/tests/abi_surface.rs`.
+
+**Adding** a function: update all three, and give it a comment in the header (the gate
+checks for one).
+
+**Renaming or removing** one, or changing a signature or a constant's value: that is a
+breaking change. Bump `SAPIENT_API_VERSION` in **both** `src/lib.rs` and `sapient.h`,
+and say so in `CHANGELOG.md`.
+
+Two implementation rules that are easy to get wrong:
+
+- **No panic may cross the boundary.** Every entry point goes through `guard_status`
+  (status-code returns) or `guard` (value returns). A panic unwinding into C is
+  undefined behaviour.
+- **`guard_status` returns the error's own code**, never a fixed sentinel — otherwise
+  callers cannot tell a generation failure from a bad argument without inspecting the
+  error out-param. Regression-tested; don't "simplify" it back.
+
+Verify with a real link, not just the unit tests:
+
+```bash
+cargo build --release -p sapient-capi
+cd examples/c-chat && make && ./c-chat "hi"
+```
 
 ## Adding a model architecture
 

@@ -4069,6 +4069,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sapient-capi"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "sapient-generate",
+ "sapient-hub",
+ "sapient-tokenizers",
+ "tokio",
+]
+
+[[package]]
 name = "sapient-cli"
 version = "0.6.0"
 dependencies = [

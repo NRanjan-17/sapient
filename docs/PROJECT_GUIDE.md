@@ -477,6 +477,33 @@ libraries above.
   `sapient` process's CPU% + RSS, per-core bars, system memory, on-disk model-cache footprint,
   and (on a GPU build) the detected accelerator. Ctrl-C to exit.
 
+### `sapient-capi` — the C ABI (every other language)
+
+The stable, hand-written C surface: `libsapient` + [`include/sapient.h`](../crates/sapient-capi/include/sapient.h).
+This is what Python (cffi), Go (cgo), Node (N-API), C#, Java, Julia and Zig bind to — the
+C ABI is the one calling convention every language already speaks.
+
+```bash
+cargo build --release -p sapient-capi          # libsapient.{a,dylib,so}
+scripts/install-capi.sh --prefix /usr/local    # + header, pkg-config, CMake
+cd examples/c-chat && make && ./c-chat "hi"    # 30-line C client
+```
+
+**Not the same thing as `sapient-ffi`.** That crate exports UniFFI scaffolding
+(`RustBuffer`, generated handles, a version-pinned contract checksum) as a codegen
+substrate for Swift and Kotlin — correct for its job, and not something you can
+`#include`. `sapient-capi` is hand-written and versioned via `SAPIENT_API_VERSION`.
+
+Invariants (full list in [`crates/sapient-capi/README.md`](../crates/sapient-capi/README.md)):
+no panic may cross the boundary (`guard`/`guard_status` convert them to
+`SAPIENT_ERR_PANIC`); `guard_status` returns the error's own code, never a sentinel;
+every returned pointer has exactly one matching free; futures run on runtime workers, not
+the caller. `tests/abi_surface.rs` gates header↔implementation parity, so the three
+sources of truth (Rust exports, `sapient.h`, committed snapshot) cannot drift.
+
+See [`docs/C-ECOSYSTEM.md`](C-ECOSYSTEM.md) for the rationale and what remains
+(a Python binding, shipping the library in releases).
+
 ### 📱 `sapient-ffi` — embedding SAPIENT in other languages (mobile & SDKs)
 The stable boundary layer for apps that aren't written in Rust. A small **blocking** API
 (`version()`, `list_models()`, `resolve_alias()`, and `LlmSession`: `load` → `chat` /
@@ -794,6 +821,14 @@ python3 scripts/gen-benchmark-report.py \
 See `docs/BENCHMARKS.md` for methodology, reproducibility instructions, and a full side-by-side
 comparison table. The short story: SAPIENT wins on TTFT, peak RAM, binary size, and cold-start
 latency; Ollama wins on sustained tok/s for larger models (acknowledged openly in the report).
+
+### Proposals
+
+- [`docs/C-ECOSYSTEM.md`](C-ECOSYSTEM.md) — **proposal, not implemented.** What it would
+  take for SAPIENT to be compatible with the C ecosystem: a hand-written `sapient-capi`
+  crate exporting a real `sapient.h` (not UniFFI's generated ABI), a shipped
+  `libsapient` + pkg-config/CMake, a Python binding, and an ABI-stability CI gate. Notes
+  that AGPL-3.0-only, not the missing ABI, is the binding constraint on community adoption.
 
 ### Engineering analyses (`reports/`)
 

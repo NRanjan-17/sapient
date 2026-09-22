@@ -15,6 +15,7 @@ members = [
     "crates/sapient-audio",
     "crates/sapient-generate",
     "crates/sapient-ffi",
+    "crates/sapient-capi",
     "crates/sapient-cli",
 ]
 resolver = "2"

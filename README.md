@@ -239,7 +239,7 @@ let text = p.generate_with_config("Write a haiku about Rust", &cfg).await?;
 
 ---
 
-## SDKs — Swift · Kotlin · TypeScript (mobile & embedding)
+## SDKs — C · Swift · Kotlin · TypeScript (embedding)
 
 The same engine, on-device in your app — **GPU by default** (wgpu: Metal on
 iOS/macOS, Vulkan on Android; probed at load, CPU fallback) and
@@ -300,6 +300,41 @@ val reply = session.chat("Hi!")
 
 (Also available as `sapient-android.zip` — a drop-in Gradle module — on every
 release.)
+
+### C / C++ — and every language with a C FFI
+
+`libsapient` + [`sapient.h`](crates/sapient-capi/include/sapient.h) is the stable C ABI.
+Python (cffi), Go (cgo), Node (N-API), C#, Java, Julia and Zig all bind to C, so one
+header reaches all of them.
+
+```bash
+cargo build --release -p sapient-capi          # libsapient.{a,dylib,so}
+scripts/install-capi.sh --prefix /usr/local    # + header, pkg-config, CMake config
+```
+
+```c
+#include "sapient.h"
+
+sapient_error_t *err = NULL;
+sapient_options_t opts = sapient_options_default();   /* always start here */
+opts.max_tokens = 128;
+
+sapient_session_t *s = sapient_session_load("smollm2-135m-q4", &opts, &err);
+if (!s) { fprintf(stderr, "%s\n", sapient_error_message(err)); return 1; }
+
+char *reply = NULL;
+sapient_chat(s, "Name one primary colour.", &reply, &err);
+puts(reply);                       /* → "The primary colour is actually blue." */
+
+sapient_string_free(reply);        /* every returned pointer has one matching free */
+sapient_session_free(s);
+```
+
+Streaming uses `sapient_chat_stream` with a callback; returning `false` from it cancels
+generation. Build it with `cc app.c $(pkg-config --cflags --libs sapient)`.
+
+Runnable example: [`examples/c-chat`](examples/c-chat) · rationale and design:
+[`docs/C-ECOSYSTEM.md`](docs/C-ECOSYSTEM.md)
 
 ### TypeScript (Node.js / React Native → `sapient serve`)
 

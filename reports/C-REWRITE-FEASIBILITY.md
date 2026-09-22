@@ -30,12 +30,12 @@ Two things are worth stating plainly, because they shaped the conclusion:
    2026-09-22 run; an earlier static grep here said "334 / 19" and undercounted) consists
    of *correctness* gates, not performance measurements. They assert equality:
 
-   | Test | What it asserts |
-   |---|---|
-   | `q6_k_neon_matches_scalar` | SIMD kernel == scalar reference |
-   | `wgpu_logits_match_cpu_llama` | GPU engine == CPU engine |
-   | `repacked_engine_logits_are_bit_identical` | optimization changed zero output bits |
-   | `stage_albert_matches_reference` | Rust port == PyTorch reference, 1e-5 |
+  | Test | What it asserts |
+  |---|---|
+  | `q6_k_neon_matches_scalar` | SIMD kernel == scalar reference |
+  | `wgpu_logits_match_cpu_llama` | GPU engine == CPU engine |
+  | `repacked_engine_logits_are_bit_identical` | optimization changed zero output bits |
+  | `stage_albert_matches_reference` | Rust port == PyTorch reference, 1e-5 |
 
    None of them record time or memory. That evidence lives in
    [`docs/BENCHMARKS.md`](../docs/BENCHMARKS.md), which is what this report reads.
@@ -93,7 +93,7 @@ quality from threading**:
 | Qwen2.5-1.5B Q4_K_M, dense | SAPIENT | llama.cpp | gap |
 |---|---:|---:|---:|
 | Decode, **1 thread** | 3.60 tok/s | 6.97 | **1.94×** — single-core kernel quality |
-| Multicore scaling, 1 → 14 threads | 7.4× (53%) | 12.1× (86%) | **1.6×** — threading overhead |
+| Multicore scaling, 1  14 threads | 7.4× (53%) | 12.1× (86%) | **1.6×** — threading overhead |
 | Decode, 14 threads | 26.68 | 84.45 | 3.16× (combined) |
 
 On Apple M4 the same-session CPU gap is narrower: **1.47×** (Llama-3.2-1B) and
@@ -156,8 +156,8 @@ The concrete remaining win is named in `CLAUDE.md`:
 **Context:** unsloth "dynamic" quants store some tensors as Q5_0, which SAPIENT
 cannot keep as blocks, so the loader re-quantizes them to Q8_0 at load. For
 GLM-4.5-Air that is ~18 GB of heap that could be zero-copy mmap instead. The
-earlier fix in this same area (F32-expansion → Q8_0 re-quant) already took peak
-RSS from **118 GB → 72 GB** and decode from **2.45 → 3.23 tok/s**; finishing the
+earlier fix in this same area (F32-expansion  Q8_0 re-quant) already took peak
+RSS from **118 GB  72 GB** and decode from **2.45  3.23 tok/s**; finishing the
 job with a native Q5_0 dtype removes what remains.
 
 This is a `DType` enum variant plus a GEMV kernel, following the existing Q5_K
@@ -227,7 +227,7 @@ it is the only item on this list where C appears at all.**
 | KleidiAI named as the single-core cause | `docs/ROADMAP.md:42-52`; `CLAUDE.md` |
 | "Decode is memory-latency-bound" | `CLAUDE.md` §SIMD hot paths (RPi5 perf hunt) |
 | No-go optimization records | `CLAUDE.md`; `kernels/matmul.rs`; `docs/BENCHMARKS.md` |
-| Q5_0 / 18 GB residual heap | `CLAUDE.md` §GLM-4.5-Air, "Q5_0→Q8_0 at load (RSS fix)" |
+| Q5_0 / 18 GB residual heap | `CLAUDE.md` §GLM-4.5-Air, "Q5_0Q8_0 at load (RSS fix)" |
 | Spinpool measured deltas | `CLAUDE.md` §"Decode spin/park threadpool" |
 | Test counts / no C in build | Measured run 2026-09-22 + scan of `crates/`, `tests/` at `a0965a5` |
 

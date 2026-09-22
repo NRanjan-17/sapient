@@ -319,6 +319,18 @@ Native via a first-party TypeScript SDK** (HTTP → `sapient serve` today,
 napi/JSI over the FFI crate next). Full build/use/testing guide (including the
 **personal-hardware safe-testing ladder**): [MOBILE.md](MOBILE.md).
 
+- [x] **`sapient-capi` crate (C ABI)** — `libsapient` + a hand-written
+  `include/sapient.h`, the surface Python/Go/Node/C#/Java/Julia/Zig bind to. Load,
+  chat, streaming chat with cancellation, transcript, catalog, backend selection.
+  Ships pkg-config + a CMake config package (`scripts/install-capi.sh`), a 30-line
+  `examples/c-chat` link canary, and an ABI-stability gate (`tests/abi_surface.rs`)
+  holding the Rust exports, the header and a committed snapshot in agreement.
+  Distinct from `sapient-ffi`, whose UniFFI scaffolding is a codegen substrate and not
+  `#include`-able. Rationale: [C-ECOSYSTEM.md](C-ECOSYSTEM.md).
+  - **Remaining:** a Python binding (cffi over the C ABI, or PyO3), and attaching
+    `libsapient` + header to GitHub releases — it builds, but `release.yml` does not
+    yet ship it. Licensing (AGPL vs a linking exception) gates how far community
+    bindings can actually spread; see C-ECOSYSTEM.md §3.
 - [x] **`sapient-ffi` crate (UniFFI)** — blocking `LlmSession` API (load → chat /
   chat_stream / reset / transcript) over the existing `Pipeline` (prefix cache
   on, internal tokio runtime); streaming via a foreign `TokenListener` callback

@@ -1,0 +1,35 @@
+[package]
+name = "sapient-capi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Stable C ABI for embedding SAPIENT — the `sapient.h` surface every language binds to"
+readme = "README.md"
+rust-version.workspace = true
+# Not published to crates.io (repo-wide rule) — consumed as a C library
+# artifact (libsapient.{so,dylib,dll} + include/sapient.h).
+publish = false
+
+[lib]
+name = "sapient"
+# staticlib → libsapient.a for static linking into C/C++ programs
+# cdylib    → libsapient.{so,dylib,dll} for dynamic linking + dlopen hosts
+#             (Python cffi, Go cgo, Node N-API, JVM, C#, …)
+# lib       → lets the ABI tests in tests/ import the crate directly
+crate-type = ["staticlib", "cdylib", "lib"]
+
+[features]
+default = []
+# Cross-platform GPU inference (Vulkan / DX12 / Metal). Adds no C symbols —
+# `SAPIENT_BACKEND_AUTO` probes for a usable adapter and falls back to CPU.
+wgpu = ["sapient-generate/wgpu"]
+
+[dependencies]
+sapient-generate.workspace = true
+sapient-hub.workspace = true
+sapient-tokenizers.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+anyhow.workspace = true

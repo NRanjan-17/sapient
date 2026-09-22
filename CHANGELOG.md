@@ -3,6 +3,32 @@
 Release notes for SAPIENT. The release workflow publishes each version's
 section below as the GitHub release body.
 
+## [Unreleased]
+
+### Added — `sapient-capi`, the stable C ABI
+
+SAPIENT can now be embedded from **C, and from every language with a C FFI**: Python
+(cffi), Go (cgo), Node (N-API), C#, Java, Julia, Zig. Previously the only embedding
+surfaces were UniFFI (Swift/Kotlin) and HTTP.
+
+- **`crates/sapient-capi`** — hand-written C ABI over the `Pipeline` API, building
+  `libsapient.{a,dylib,so}`. Load, chat, streaming chat with cancellation, transcript,
+  reset, catalog access, alias resolution, backend selection and cache-dir control.
+- **`crates/sapient-capi/include/sapient.h`** — the canonical declaration, versioned by
+  `SAPIENT_API_VERSION`. Distinct from `sapient-ffi`, whose UniFFI scaffolding is a
+  codegen substrate and not `#include`-able.
+- **`scripts/install-capi.sh`** — installs the library, header, a pkg-config `.pc` and a
+  CMake config package, so `pkg-config --libs sapient` and `find_package(sapient)` work.
+- **`examples/c-chat`** — a 30-line streaming C client, which doubles as a link canary.
+- **ABI-stability gate** — `tests/abi_surface.rs` holds the Rust exports, the header and
+  a committed snapshot in agreement, and checks every status/backend constant plus the
+  ABI version. A rename or removal fails the build until `SAPIENT_API_VERSION` is bumped
+  in both places.
+- 18 new tests (13 unit + 5 ABI). Workspace total 316 → 334 passing.
+
+Not yet shipped: a Python binding, and attaching `libsapient` to GitHub releases (it
+builds, but `release.yml` does not attach it). See `docs/C-ECOSYSTEM.md`.
+
 ## [0.6.0] - 2026-07-14
 
 **SAPIENT becomes an agent backend, and goes mobile.**
