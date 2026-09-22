@@ -18,6 +18,14 @@ members = [
     "crates/sapient-capi",
     "crates/sapient-cli",
 ]
+
+# The language-comparison crates live OUTSIDE the workspace on purpose: the C++
+# arm must never be built or shipped as part of SAPIENT. See
+# benchmarks/lang-comparison/README.md.
+exclude = [
+    "benchmarks/lang-comparison/rust/cpp-kernels",
+    "benchmarks/lang-comparison/rust/harness",
+]
 resolver = "2"
 
 [workspace.package]

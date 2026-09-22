@@ -89,6 +89,70 @@ If the header says a function exists and the library disagrees, programs break a
 
 Everything below was run on an **Apple M2, 8 cores, 16 GB, macOS 27.0**, with Rust 1.98.1.
 
+## 2.0 What you need to run any of this
+
+### Minimum, to build and test the engine
+
+| Requirement | Version | Notes |
+|---|---|---|
+| Rust | **1.82 or newer** | The project's stated minimum. Measurements here used 1.98.1 |
+| Disk | **~12 GB free** | Build artefacts alone reach 9 GB |
+| RAM | **8 GB** | 16 GB recommended; some skipped tests need far more |
+| OS | macOS, Linux or Windows | No Python, Docker or CUDA needed |
+
+```bash
+cargo test --workspace -- --test-threads=1
+```
+
+### To build and test the C interface
+
+| Requirement | Notes |
+|---|---|
+| A C compiler | clang or gcc. Already present on macOS with Xcode tools, or `build-essential` on Linux |
+| `make` | Only for the example program |
+| Linux only | `libasound2-dev` — the CLI links audio libraries by default |
+
+```bash
+cargo build --release -p sapient-capi
+cd examples/c-chat && make && ./c-chat "hello"
+```
+
+### To run the C++ kernel comparison
+
+| Requirement | Notes |
+|---|---|
+| A C++17 compiler | clang 15+ or gcc 11+ |
+| **An ARM64 processor** | Apple Silicon, Raspberry Pi 5, or an ARM server. **The kernels use ARM instructions and will not build on Intel or AMD** |
+| ARM dot-product support | Present on every Apple Silicon chip and on Cortex-A76 and newer |
+| `python3` | Only for the analysis scripts, not the measurements |
+
+```bash
+cd benchmarks/lang-comparison/rust/harness
+cargo bench --bench kernels
+```
+
+### For the heavier tests we skipped
+
+20 tests are skipped by default because they download large models:
+
+| Test | Needs |
+|---|---|
+| Mixtral end-to-end | **26 GB download, 32 GB RAM** |
+| GLM-4.5-Air | **63 GB download, 96 GB RAM** |
+| Whisper, Kokoro, vision tests | 0.1–2 GB downloads plus network |
+
+Run them with `cargo test --workspace --release -- --ignored`. The machine used for this report has 16 GB, so the two largest were not run.
+
+### What this report was measured on
+
+| | |
+|---|---|
+| C interface tests, leak check | **Apple M2**, 8 cores, 16 GB, macOS 27.0, Rust 1.98.1 |
+| Our three optimisation attempts | Same M2 |
+| Kernel and engine comparison | **Apple M5**, 10 cores, 24 GB, macOS 26.6, Rust 1.98.1, clang 21 |
+
+Two different machines, so **do not compare absolute timings between sections** — only ratios within a section.
+
 ## 2.1 The full test suite
 
 ```
@@ -167,6 +231,29 @@ The test ran in stages, each one a gate:
 | **Q6_K maths on its own** | **1.000x — literally no difference** |
 
 That last row is the important one. The C++ version of Q6_K ran **26% fewer instructions** and finished in exactly the same time. The computer was waiting for memory, not for maths.
+
+## 3.2b We re-ran it ourselves, per kernel, on a different chip
+
+The numbers above come from an M5. We ran the same two kernels separately on an **M2** to see whether they hold. Speedup against plain Rust, higher is faster:
+
+| Kernel | Rust unrolled | Rust unrolled + vectail | Rust unchecked | C++ |
+|---|---:|---:|---:|---:|
+| **Q4_K** (64% of decode) | 1.124x | **1.153x** | 1.075x | **1.229x** |
+| **Q6_K** (32% of decode) | — | — | — | **1.035x** |
+
+Five matrix sizes per kernel, Criterion, 30 samples each. Four findings:
+
+**Q4_K replicates. Q6_K does not.** The M5 study measured Q6_K at exactly **1.000x**. On the M2 it is **1.035x**, consistently, across all five sizes (1.033–1.036). Same code, same compilers, different chip.
+
+That matters: **the language gap depends on the processor.** One machine is not enough to decide this, which is precisely the caution the original study raised about a Raspberry Pi.
+
+**Rust recovers 70% of the gap here, not 40%.** The existing bit-identical Rust variant with the loop unrolled and the float tail vectorised reaches 1.153x against C++'s 1.229x — closing **70.9%** of the distance, stable across every size (69.5–74.7%).
+
+**Removing bounds checks makes it slower.** The `unchecked` variant measures **1.075x — worse than the checked one at 1.124x**. Reproduced independently. Reaching for `unsafe` here costs performance as well as safety.
+
+**The ranking never wavers:** C++ > vectail > unrolled > unchecked > plain Rust, at all five sizes. None of this is noise.
+
+Raw data: `benchmarks/lang-comparison/results/M2_KERNEL_RESULTS.md`.
 
 ## 3.3 Why the 5% is not about the language
 
@@ -283,7 +370,61 @@ Cost was a few days. The benefit is that Python, Go, Node, Java, C# and Zig deve
 | We would lose memory safety | On code that runs untrusted model files |
 | We already tried to improve the C++ | All three attempts were slower |
 
-## 5.2 The scope point, concretely
+## 5.2 Straight trade-off: Rust vs C
+
+### Staying in Rust
+
+**Advantages**
+
+| | |
+|---|---|
+| Memory safety | The engine parses model files downloaded from the internet. In Rust a malformed file is an error; in C it is a potential security hole. This is the single biggest one |
+| The phone apps come free | Swift and Kotlin bindings are generated automatically from the Rust. A C port throws that away and you write them by hand |
+| One toolchain, every platform | `cargo build` cross-compiles to Mac, Linux, Windows, Raspberry Pi, iOS and Android. No per-platform C compiler setup |
+| No undefined behaviour | Buffer overruns, use-after-free and data races are compile errors, not 2am bugs |
+| Fearless threading | The compiler rejects data races. The engine is heavily threaded, so this is used constantly |
+| Dependencies are managed | One file lists them; no vendored headers, no build-system archaeology |
+| The team already knows it | 53,000 lines of institutional knowledge |
+
+**Disadvantages**
+
+| | |
+|---|---|
+| The compiler sometimes optimises worse | Measured: rustc did not unroll a loop clang did. Worth 1.298x on one kernel |
+| Some instructions are not available yet | `vmmlaq_s32` is still unstable in Rust, so we emit it via hand-written assembly instead of an intrinsic |
+| Fewer people can read it | The C and C++ pool is much larger, which matters for outside contributors |
+| Slower to compile | Minutes, not seconds |
+| Hand-written assembly is awkward | Possible, but uglier than in C |
+
+### Switching to C
+
+**Advantages**
+
+| | |
+|---|---|
+| Slightly better code generation, sometimes | +5.5% end to end, measured. About 40% of it is available in Rust anyway |
+| Every instruction available immediately | No waiting for a Rust intrinsic to stabilise |
+| Larger contributor pool | More people write C than Rust |
+| Trivial to embed elsewhere | Though the C interface we just built already gives us this without rewriting anything |
+| Faster compiles | |
+
+**Disadvantages**
+
+| | |
+|---|---|
+| A 53,000-line rewrite | 360 lines have a C++ version today. That is 0.7% |
+| Memory safety gone | On code that parses untrusted files |
+| The phone SDKs must be rebuilt by hand | Swift and Kotlin bindings no longer generate themselves |
+| Build complexity explodes | A C compiler per platform, plus CMake or Make, plus dependency vendoring |
+| Half the measured evidence says zero gain | Q6_K came back at exactly 1.000x |
+| We already tried to improve the C++ | Three attempts, all slower |
+| Years of tuning thrown away | Every fixed bug, every measured decision, re-litigated in a new language |
+
+### The summary line
+
+The gain is **real but small and mostly recoverable in Rust**. The cost is **a total rewrite plus the loss of memory safety and the mobile SDKs**. That is not a close call.
+
+## 5.3 The scope point, concretely
 
 "Convert it to C" sounds like one project. It is not. What has a C++ version today is **2 maths functions**. What does not:
 
@@ -293,7 +434,7 @@ Cost was a few days. The benefit is that Python, Go, Node, Java, C# and Zig deve
 - The four different model engines, plus speech-to-text, text-to-speech, and vision
 - All three graphics-card backends
 
-## 5.3 What to do instead
+## 5.4 What to do instead
 
 From the study's own recommendations, in order of value:
 
