@@ -1013,6 +1013,8 @@ fn server_err(msg: impl std::fmt::Display) -> Response {
 /// 1. Use the `"model"` field from the request if non-empty.
 /// 2. Fall back to whichever model is currently loaded in memory.
 /// 3. Return a 400 if neither is available.
+// The error is the HTTP response handed straight back to axum; boxing it buys nothing.
+#[allow(clippy::result_large_err)]
 async fn resolve_model(
     requested: Option<&str>,
     cache: &Mutex<ModelCache<ServedModel>>,
