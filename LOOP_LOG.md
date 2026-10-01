@@ -83,3 +83,64 @@ accuracy class, so it needs a quality gate first — which the repo lacks. Order
 (a) add a perplexity/feature-drift gate, (b) then the kernel. If (a) is too large for
 one iteration, fall back to the bit-identical lever: thread scaling of the blocked
 GEMM (1 → 10 threads gives only ~4× on the M4).
+
+---
+
+## Iteration 2 — 2026-10-02 — perplexity gate (`sapient eval-ppl`) and first quality numbers
+
+**Research.** Technique: a perplexity gate that scores exactly what llama.cpp's
+`llama-perplexity` scores (non-overlapping 512-token chunks, second half of each chunk,
+BOS at chunk start), so the two engines can be compared on the same GGUF and the same
+tokens. Source: llama.cpp `tools/perplexity`. Expected gain: no speed change; it
+unlocks every non-bit-identical kernel change (three were blocked on it: Q8_K-style
+activations for Q8_0 linears, the vectorised softmax `exp`, MLX 4-bit re-quantisation).
+
+**Change.**
+- `sapient eval-ppl <model|file.gguf> --file <text> [--ctx 512] [--chunks 20] [--json]`
+  (hidden command). Works on every engine that implements `forward_all_logits`.
+- `scripts/bench_loop.py` gains a `quality` section (Sapient + `llama-perplexity` on
+  wikitext-2, downloaded on first use). The harness edit was delegated to a Haiku
+  subagent and reviewed; one fix after review (`-ngl 0` so llama.cpp scores on CPU).
+- `bench-llm` and `eval-ppl` share one model loader.
+
+**Measured** (Apple M4, CPU, wikitext-2 test, 20 × 512-token chunks = 5100 scored
+tokens, identical for all runs; `benchmarks/2026-10-02-m4-quality.json`).
+
+| Perplexity (lower is better) | llama.cpp | Sapient, per-32 activation scales | Sapient default (Q8_K activations) |
+|---|---:|---:|---:|
+| Qwen2.5-1.5B Q4_K_M | 11.720 | 11.738 (+0.15%) | 11.762 (+0.36%) |
+| Llama-3.2-1B Q4_K_M | 16.259 | 16.464 (+1.26%) | 16.508 (+1.53%) |
+
+Protocol check: on the first four chunks the running estimates track llama.cpp's
+chunk by chunk (7.14 / 10.03 / 10.02 / 10.09 vs 7.08 / 9.92 / 9.92 / 10.02).
+
+What the numbers say:
+- The Q8_K activation format (default since July, adopted for speed) costs about
+  **+0.2–0.3% perplexity** over the per-32 format. This is its first quality measurement.
+- Sapient is **+0.4% (Qwen) to +1.5% (Llama-1B)** worse than llama.cpp on the same file.
+  The README's old "zero quality loss" wording was not literally true; the loss is small.
+- The absolute standard errors (±0.45, ±0.68) are much larger than these differences,
+  but the runs score identical tokens, so the differences are paired. A per-token
+  paired interval is not computed yet — treat sub-0.5% differences as indicative.
+
+**Negative / blocked.**
+- **Metal perplexity not measured.** `cargo build --features mlx` fails here: Xcode's
+  Metal Toolchain component is not installed (`xcodebuild -downloadComponent
+  MetalToolchain`). Installing a system component is outside what the loop does on its
+  own, so the 4-bit re-quantisation cost stays unmeasured.
+- No speed metric changed this iteration.
+
+**Decision.** Merge on green CI: adds a metric (perplexity, one of the listed
+benchmarks) and a gate; no performance or correctness regression (new unit test for the
+log-likelihood helper; existing suites unchanged).
+
+**Next hypothesis (iteration 3).** Find where Llama-3.2-1B's +1.3% comes from before
+adding more quantisation. Two suspects, each testable with `eval-ppl`:
+(1) the Q8_0 KV cache (llama.cpp keeps K/V in f16) — Llama-1B's head_dim is 64, so its
+cache is Q8_0; (2) int8 activation quantisation in the Q6_K kernels (Llama-1B's tied
+embedding/output matrix is Q6_K). Caveat to check first: `eval-ppl` uses `forward_all_logits`, which runs with
+`use_cache = false` — it may never touch the quantised KV cache, in which case suspect
+(1) is not exercised here and decode-time quality needs a cached-path variant of the
+gate. If a suspect explains most of the gap, fix it when the
+speed cost is within noise; otherwise record it. Also add a paired per-token interval to
+`eval-ppl` so small differences can be called.

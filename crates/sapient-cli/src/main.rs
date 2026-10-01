@@ -323,6 +323,39 @@ enum Commands {
         iters: usize,
     },
 
+    /// Perplexity of a model on a text file — the quality gate for kernel changes
+    /// that are not bit-identical. Same protocol as llama.cpp's `llama-perplexity`:
+    /// non-overlapping `--ctx`-token chunks, the second half of each chunk scored.
+    #[command(name = "eval-ppl", hide = true)]
+    EvalPpl {
+        /// Model alias or local .gguf path.
+        model: String,
+
+        /// UTF-8 text file to score (e.g. wikitext-2 `wiki.test.raw`).
+        #[arg(short, long)]
+        file: std::path::PathBuf,
+
+        /// Tokens per chunk.
+        #[arg(long, default_value = "512")]
+        ctx: usize,
+
+        /// Number of chunks to score (0 = the whole file).
+        #[arg(long, default_value = "20")]
+        chunks: usize,
+
+        /// Generation backend: auto | cpu | metal | wgpu.
+        #[arg(short, long, default_value = "auto")]
+        backend: String,
+
+        /// Force memory-mapped weight loading.
+        #[arg(long)]
+        mmap: bool,
+
+        /// Output JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// LLM generation benchmark: load time, TTFT, decode-only tok/s, and peak RSS.
     /// Greedy decode with exact token counts; warm-up runs are excluded from the means.
     #[command(name = "bench-llm", visible_aliases = ["bllm"], hide = true)]
@@ -579,6 +612,15 @@ async fn dispatch(cli: Cli) -> Result<()> {
             warmup,
             iters,
         } => bench_command(model.as_str(), &batch_sizes, backend, warmup, iters).await,
+        Commands::EvalPpl {
+            model,
+            file,
+            ctx,
+            chunks,
+            backend,
+            mmap,
+            json,
+        } => eval_ppl_command(model.as_str(), &file, ctx, chunks, &backend, mmap, json).await,
         Commands::BenchLlm {
             model,
             prompt,
@@ -2493,6 +2535,153 @@ fn peak_rss_bytes() -> u64 {
     0
 }
 
+// ── eval-ppl ──────────────────────────────────────────────────────────────────
+
+/// Load a model for the benchmark/eval commands: a local `.gguf` path loads
+/// directly, anything else resolves through the registry (same routing as `chat`).
+async fn load_bench_pipeline(
+    model: &str,
+    backend_kind: GenerationBackend,
+    force_mmap: bool,
+) -> Result<Pipeline> {
+    let is_local_gguf = model.ends_with(".gguf") || std::path::Path::new(model).is_file();
+    if is_local_gguf {
+        let loaded = if force_mmap {
+            Pipeline::from_gguf_mmap_with_backend(model, backend_kind).await
+        } else {
+            Pipeline::from_gguf_with_backend(model, backend_kind).await
+        };
+        loaded.with_context(|| format!("failed to load GGUF '{model}'"))
+    } else {
+        let opts = LoadOptions {
+            backend: backend_kind,
+            force_mmap,
+            ..LoadOptions::default()
+        };
+        Pipeline::from_pretrained_with_opts(model, opts)
+            .await
+            .with_context(|| format!("failed to load model '{model}'"))
+    }
+}
+
+/// Negative log-likelihood of `target` under `logits`, in nats (f64 log-sum-exp).
+fn token_nll(logits: &[f32], target: u32) -> f64 {
+    let mx = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+    let sum: f64 = logits.iter().map(|&l| (l as f64 - mx).exp()).sum();
+    mx + sum.ln() - logits[target as usize] as f64
+}
+
+async fn eval_ppl_command(
+    model: &str,
+    file: &std::path::Path,
+    ctx: usize,
+    max_chunks: usize,
+    backend: &str,
+    force_mmap: bool,
+    json_out: bool,
+) -> Result<()> {
+    if ctx < 4 {
+        anyhow::bail!("--ctx must be at least 4");
+    }
+    let backend_kind = parse_generation_backend(backend)?;
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("failed to read {}", file.display()))?;
+
+    let spinner = (!json_out).then(|| ui::spinner(format!("loading {model}…")));
+    let pipeline = load_bench_pipeline(model, backend_kind, force_mmap).await?;
+    if let Some(pb) = spinner {
+        pb.finish_and_clear();
+    }
+
+    let tok = pipeline.tokenizer();
+    let tokens = tok.encode_ids(&text, false)?;
+    // The model's BOS, if its tokenizer adds one: each chunk starts with it
+    // (llama.cpp overwrites the chunk's first token the same way).
+    let bos = {
+        let with = tok.encode("a")?;
+        let without = tok.encode_ids("a", false)?;
+        (with.len() > without.len()).then(|| with[0])
+    };
+
+    let available = tokens.len() / ctx;
+    let n_chunks = if max_chunks == 0 {
+        available
+    } else {
+        max_chunks.min(available)
+    };
+    if n_chunks == 0 {
+        anyhow::bail!(
+            "{} has {} tokens — fewer than one {ctx}-token chunk",
+            file.display(),
+            tokens.len()
+        );
+    }
+
+    let engine = pipeline.engine_arc();
+    let first = ctx / 2;
+    let started = Instant::now();
+    let (mut nll, mut nll2, mut count) = (0.0f64, 0.0f64, 0usize);
+    for c in 0..n_chunks {
+        let mut chunk = tokens[c * ctx..(c + 1) * ctx].to_vec();
+        if let Some(b) = bos {
+            chunk[0] = b;
+        }
+        let logits = tokio::task::block_in_place(|| -> Result<Vec<Vec<f32>>> {
+            let mut eng = engine
+                .lock()
+                .map_err(|e| anyhow::anyhow!("engine lock poisoned: {e}"))?;
+            eng.forward_all_logits(&chunk)
+        })?;
+        // Score the second half: position j predicts token j + 1.
+        for j in first..ctx - 1 {
+            let v = token_nll(&logits[j], chunk[j + 1]);
+            nll += v;
+            nll2 += v * v;
+            count += 1;
+        }
+        if !json_out {
+            eprintln!(
+                "  chunk {:>3}/{n_chunks}  running ppl {:.4}",
+                c + 1,
+                (nll / count as f64).exp()
+            );
+        }
+    }
+
+    let mean = nll / count as f64;
+    let var = (nll2 / count as f64 - mean * mean).max(0.0);
+    let stderr = (var / count as f64).sqrt();
+    let ppl = mean.exp();
+    let ppl_err = ppl * stderr;
+    let secs = started.elapsed().as_secs_f64();
+
+    if json_out {
+        let out = serde_json::json!({
+            "model": model,
+            "backend": backend,
+            "file": file.display().to_string(),
+            "ctx": ctx,
+            "chunks": n_chunks,
+            "tokens_scored": count,
+            "bos_token": bos,
+            "mean_nll": mean,
+            "perplexity": (ppl * 10000.0).round() / 10000.0,
+            "perplexity_stderr": (ppl_err * 10000.0).round() / 10000.0,
+            "seconds": (secs * 10.0).round() / 10.0,
+            "sapient_version": env!("CARGO_PKG_VERSION"),
+            "method": "llama.cpp protocol: non-overlapping ctx-token chunks, first token of \
+                       each chunk replaced by BOS when the tokenizer adds one, positions \
+                       ctx/2..ctx-1 scored",
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!(
+            "perplexity {ppl:.4} ± {ppl_err:.4}  ({count} tokens, {n_chunks} × {ctx}-token chunks, {secs:.1}s)"
+        );
+    }
+    Ok(())
+}
+
 /// One timed bench-llm generation.
 struct BenchSample {
     ttft_ms: u64,
@@ -2573,25 +2762,7 @@ async fn bench_llm_command(
     let load_start = Instant::now();
     let load_spinner = (!json_out).then(|| ui::spinner(format!("loading {model}…")));
 
-    let is_local_gguf = model.ends_with(".gguf") || std::path::Path::new(model).is_file();
-    let pipeline = if is_local_gguf {
-        // Local GGUF file: load directly without Hub download (same routing as `chat`).
-        let loaded = if force_mmap {
-            Pipeline::from_gguf_mmap_with_backend(model, backend_kind).await
-        } else {
-            Pipeline::from_gguf_with_backend(model, backend_kind).await
-        };
-        loaded.with_context(|| format!("failed to load GGUF '{model}'"))?
-    } else {
-        let opts = LoadOptions {
-            backend: backend_kind,
-            force_mmap,
-            ..LoadOptions::default()
-        };
-        Pipeline::from_pretrained_with_opts(model, opts)
-            .await
-            .with_context(|| format!("failed to load model '{model}'"))?
-    };
+    let pipeline = load_bench_pipeline(model, backend_kind, force_mmap).await?;
     let load_ms = load_start.elapsed().as_millis() as u64;
 
     if let Some(pb) = load_spinner {
@@ -2704,4 +2875,26 @@ async fn bench_llm_command(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::token_nll;
+
+    #[test]
+    fn token_nll_matches_log_softmax() {
+        // Uniform logits over 4 tokens → ln(4) for any target.
+        let uniform = [0.5f32; 4];
+        assert!((token_nll(&uniform, 2) - 4f64.ln()).abs() < 1e-9);
+
+        // Hand-computed: logits [1, 2, 3], target 2 → ln(e^1 + e^2 + e^3) − 3.
+        let l = [1.0f32, 2.0, 3.0];
+        let want = (1f64.exp() + 2f64.exp() + 3f64.exp()).ln() - 3.0;
+        assert!((token_nll(&l, 2) - want).abs() < 1e-9);
+
+        // Large logits must not overflow (max-subtracted log-sum-exp).
+        let big = [1000.0f32, 999.0];
+        let want_big = (1.0 + (-1f64).exp()).ln();
+        assert!((token_nll(&big, 0) - want_big).abs() < 1e-6);
+    }
 }

@@ -363,6 +363,12 @@ Source, issues and CI live in `SkidGod4444/sapient`. Release binaries are instal
 from `openhorizon-labs/sapient` (install scripts, `sapient update`, SDK packages) —
 keep download URLs pointing there and source links pointing here.
 
+### Quality gate
+
+A kernel change that is not bit-identical must report its perplexity delta:
+`sapient eval-ppl <model> --file wiki.test.raw --ctx 512 --chunks 20 --json` before and
+after (`scripts/bench_loop.py` runs it, and llama.cpp on the same file, for you).
+
 ### Benchmarks
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a

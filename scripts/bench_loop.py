@@ -7,6 +7,7 @@ Measures, on the machine it runs on, and writes one JSON file:
           + llama.cpp `llama-bench` on the same GGUF when both are available
   Vision  image-encode latency: p50 / max / stdev over N runs, per-stage split
           (`SAPIENT_VISION_TIMING=1 sapient see`)
+  Quality perplexity on wikitext-2 (llama.cpp protocol)   `sapient eval-ppl` + `llama-perplexity`
   Size    binary size, version, git revision
 
 Nothing here is tuned per run: same prompt, same deterministic test image
@@ -16,6 +17,7 @@ Usage:
   python3 scripts/bench_loop.py                       # uses target/release/sapient
   python3 scripts/bench_loop.py --sapient /path/to/sapient --out benchmarks/x.json
   python3 scripts/bench_loop.py --skip-llm            # vision + size only
+  python3 scripts/bench_loop.py --skip-ppl            # skip quality/perplexity section
 """
 import argparse
 import datetime
@@ -30,6 +32,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+import urllib.request
+import zipfile
 import zlib
 
 PROMPT = ("Write a detailed 1000-word essay on how neural networks learn through "
@@ -123,6 +127,76 @@ def bench_llama_cpp(gguf, threads, tokens):
             "threads": threads, "gguf": os.path.basename(gguf), "build": m.group(1).strip() if m else None}
 
 
+def wikitext_path():
+    """Download and cache wikitext-2 test set; return path or None on failure."""
+    cache_dir = os.path.expanduser("~/.cache/sapient-bench")
+    target = os.path.join(cache_dir, "wikitext-2-raw", "wiki.test.raw")
+
+    if os.path.exists(target):
+        return target
+
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        zip_path = os.path.join(cache_dir, "wikitext-2-raw-v1.zip")
+        url = "https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip"
+        urllib.request.urlretrieve(url, zip_path)
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(cache_dir)
+
+        os.remove(zip_path)
+
+        if os.path.exists(target):
+            return target
+        return None
+    except Exception:
+        return None
+
+
+def bench_ppl(sapient, model, text, chunks, backend):
+    """Run sapient eval-ppl and return dict with perplexity metrics."""
+    rc, out, err = sh([sapient, "eval-ppl", model, "--file", text, "--ctx", "512",
+                       "--chunks", str(chunks), "--backend", backend, "--json"])
+    if rc != 0:
+        return {"error": (err or out).strip().splitlines()[-1][:300] if (err or out).strip() else "failed"}
+    try:
+        d = json.loads(out)
+        return {
+            "perplexity": d.get("perplexity"),
+            "perplexity_stderr": d.get("perplexity_stderr"),
+            "tokens_scored": d.get("tokens_scored"),
+            "chunks": d.get("chunks"),
+            "ctx": d.get("ctx"),
+            "seconds": d.get("seconds"),
+            "method": d.get("method"),
+        }
+    except Exception:
+        return {"error": "JSON parse failed"}
+
+
+def bench_llama_ppl(gguf, text, chunks, threads):
+    """Run llama-perplexity and parse the PPL estimate line; return dict."""
+    if not shutil.which("llama-perplexity") or not gguf:
+        return {"skipped": "llama-perplexity or GGUF not found"}
+
+    rc, out, err = sh(["llama-perplexity", "-m", gguf, "-f", text, "-c", "512",
+                       "--chunks", str(chunks), "-ngl", "0", "-t", str(threads)])
+    if rc != 0:
+        return {"error": "llama-perplexity failed"}
+
+    # Parse "Final estimate: PPL = X +/- Y" line
+    text_combined = out + err
+    m = re.search(r"Final estimate:\s+PPL\s*=\s*([\d.]+)\s*\+/-\s*([\d.]+)", text_combined)
+    if m:
+        return {
+            "perplexity": float(m.group(1)),
+            "perplexity_stderr": float(m.group(2)),
+            "chunks": chunks,
+            "threads": threads,
+        }
+    return {"error": "no Final estimate line"}
+
+
 VISION_RE = re.compile(r"vision (\d+) ms · prefill (\d+) ms")
 STAGE_RE = re.compile(r"\[vision\] (\d+) patches · (.*) ms")
 
@@ -164,9 +238,11 @@ def main():
     ap.add_argument("--runs", type=int, default=3, help="measured LLM runs (bench-llm adds 1 warm-up)")
     ap.add_argument("--tokens", type=int, default=128)
     ap.add_argument("--vision-runs", type=int, default=10)
+    ap.add_argument("--ppl-chunks", type=int, default=20, help="512-token wikitext-2 chunks to score; 0 disables the quality section")
     ap.add_argument("--backend", default="cpu")
     ap.add_argument("--skip-llm", action="store_true")
     ap.add_argument("--skip-vision", action="store_true")
+    ap.add_argument("--skip-ppl", action="store_true")
     a = ap.parse_args()
 
     sapient = os.path.abspath(a.sapient)
@@ -181,7 +257,7 @@ def main():
                     "cpu_count": os.cpu_count(), "perf_threads": perf_threads()},
         "sapient": {"version": ver.strip(), "git": rev.strip(), "dirty": bool(dirty.strip()),
                     "binary_bytes": os.path.getsize(sapient), "backend": a.backend},
-        "llm": {}, "vision": None,
+        "llm": {}, "quality": {}, "vision": None,
     }
     if sys.platform == "darwin":
         rcb, brand, _ = sh(["sysctl", "-n", "machdep.cpu.brand_string"])
@@ -198,6 +274,22 @@ def main():
             if "decode_tps_mean" in s and "decode_tps_mean" in l and s["decode_tps_mean"]:
                 entry["llama_cpp_over_sapient"] = round(l["decode_tps_mean"] / s["decode_tps_mean"], 3)
             res["llm"][model] = entry
+
+    if not a.skip_ppl and a.ppl_chunks > 0:
+        text = wikitext_path()
+        if text is None:
+            res["quality"] = {"skipped": "wikitext-2 not available"}
+        else:
+            for model in LLM_MODELS:
+                print(f"[quality] {model} …", file=sys.stderr)
+                entry = {"sapient": bench_ppl(sapient, model, text, a.ppl_chunks, a.backend)}
+                # e.g. "openhorizon/qwen2.5-1.5b-q4" → cached repo dir containing "qwen2.5-1.5b"
+                gguf = find_cached_gguf(model.split("/")[1].removesuffix("-q4"))
+                entry["llama_cpp"] = bench_llama_ppl(gguf, text, a.ppl_chunks, perf_threads())
+                s, l = entry["sapient"], entry["llama_cpp"]
+                if "perplexity" in s and "perplexity" in l and s["perplexity"] and l["perplexity"]:
+                    entry["sapient_over_llama_cpp"] = round(s["perplexity"] / l["perplexity"], 4)
+                res["quality"][model] = entry
 
     if not a.skip_vision:
         print("[vision] smolvlm-256m …", file=sys.stderr)
