@@ -166,7 +166,7 @@ pub const CATALOG: &[SupportedModel] = &[
         repo_id: "meta-llama/Llama-3.2-3B-Instruct",
         family: "Llama",
         params: "3B",
-        gated: false,
+        gated: true,
         extra_aliases: &["llama-3.2-3b", "llama3.2-3b"],
     },
     // ── Mistral (Llama forward engine) ───────────────────────────────────────
@@ -176,7 +176,7 @@ pub const CATALOG: &[SupportedModel] = &[
         repo_id: "mistralai/Mistral-7B-Instruct-v0.2",
         family: "Mistral",
         params: "7B",
-        gated: false,
+        gated: true,
         extra_aliases: &["mistral-7b", "mistral-7b-instruct"],
     },
     // ── Phi GGUF variants ─────────────────────────────────────────────────────
