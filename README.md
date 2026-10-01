@@ -30,8 +30,8 @@ It runs on a Raspberry Pi 5, a laptop, or a Jetson: CPU everywhere, Metal on App
 Silicon, and wgpu (Vulkan / DX12) on Intel, AMD, and Nvidia GPUs.
 
 **What it is not:** the fastest decoder. llama.cpp is ahead on raw tokens per second
-(numbers in [Performance](#performance)). SAPIENT's case is breadth in one small,
-dependency-light binary.
+(numbers in [Performance](#performance)). SAPIENT's case is breadth — chat, speech, and
+vision in one self-contained binary.
 
 ## Quick start
 
