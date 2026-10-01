@@ -360,7 +360,9 @@ personal hardware is a project rule, not a suggestion.
 ### Benchmarks
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
-per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`).
+per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
+kernel changes on a small-cache ARM board as well as an M-series Mac: a loop that
+is compute-bound in a Mac's L2 can be memory-bound on a Pi 5.
 
 **Publishing a performance number?** Use `sapient bench-llm <alias | file.gguf> --json`
 (decode-only tok/s, warm-up excluded, real peak RSS) and commit its raw JSON — plus the

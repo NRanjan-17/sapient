@@ -92,17 +92,18 @@ llama.cpp and Ollama run it at 8-bit.
 
 | Vision encode | before | after | change |
 |---|---:|---:|---:|
-| Apple M4, 10 threads | 1140 ms | **~670 ms** | −41% |
-| Apple M4, 4 threads (`RAYON_NUM_THREADS=4`) | 1410 ms | **~990 ms** | −30% |
-| Raspberry Pi 5, v0.5.2 release binary | 7.2–7.4 s | not re-measured | — |
+| Apple M4, 10 threads | 1140 ms | **~605 ms** | −47% |
+| Apple M4, 4 threads (`RAYON_NUM_THREADS=4`) | 1410 ms | **~760 ms** | −46% |
+| Raspberry Pi 5 (4× Cortex-A76) | 7.2–7.4 s (v0.5.2 release) | **4.26 s** (3 runs: 4257–4269 ms) | −42% |
 
 "Before" on the M4 is main at v0.6.0-level kernels (the 3.0 s in the
-vision-language table further down predates the blocked W8A8 GEMM). The Pi row is
-the only Pi vision measurement that exists, and it is on the old v0.5.2 binary —
-the new kernels have not been timed on a Pi.
+vision-language table further down predates the blocked W8A8 GEMM). "Before" on
+the Pi is the installed v0.5.2 release binary; "after" is this branch
+cross-compiled (`--no-default-features`, `target-cpu=cortex-a76`). Pi prefill for
+the 79-token prompt also dropped 0.58 → 0.27 s.
 
-Three changes, all bit-identical (reply text, `vlm_e2e`, `vlm_geometry_probe` and
-a new kernel bit-identity test all pass):
+Four changes, all bit-identical (reply text, `vlm_e2e`, `vlm_geometry_probe` and
+two new kernel bit-identity tests all pass):
 
 1. **Parallel element-wise map** (`unary_f32` ≥ 65k elements): the tower's GELU was
    one single-threaded pass over 3M elements per layer — 255 → 40 ms.
@@ -111,11 +112,26 @@ a new kernel bit-identity test all pass):
    LLM engines share this helper, so short-prompt prefill also dropped (110 → ~75 ms
    for 77 tokens).
 3. **Four-activation-row SDOT tile** (`dot_q8_0_row_sdot_x4`): each Q8_0 weight
-   block is loaded and its scale decoded once for four patch rows — MLP linears
-   −15 to −18%.
+   block is loaded once for four patch rows, the four block dots reduce together
+   and combine with the scales as a vector; weight scales are widened once per
+   weight row.
+4. **Activation panels in the blocked W8A8 GEMM** — the Pi finding. The old loop
+   swept all 1024 patch rows (0.8–3 MB of int8) per weight row. That fits an
+   M-series L2 but not a Cortex-A76's 512 KB, and on the Pi the tower's linears
+   sat on the memory-bandwidth roofline (~2.4 GB of traffic per linear per layer).
+   Processing 32 KB activation panels against each task's weight rows took the Pi
+   from 5.5 → 4.3 s (fc2 1300 → ~560 ms). Panel sweep on the Pi: 8–128 KB within
+   ~2%, 512 KB +7%, no panelling +28% (`SAPIENT_Q8_PANEL_KB` overrides).
 
-M4 stage split after (10 threads, ms): norm 26 · q/k/v 121 · attention 165 ·
-out_proj 40 · fc1 150 · GELU 40 · fc2 110.
+Stage split after (ms):
+
+| | norm | q/k/v | attention | out_proj | fc1 | GELU | fc2 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| M4, 10 threads | 26 | 103 | 160 | 34 | 126 | 41 | 95 |
+| Pi 5 | 73 | ~690 | **~1560** | ~235 | ~930 | ~187 | ~550 |
+
+On the Pi, attention is now the largest stage (36%): two f32 GEMMs per head over
+4 MB score matrices plus ~150M scalar exponentials.
 
 **Measured, not adopted:** a 4-wide NEON polynomial `exp` for the attention
 softmax (~150M exponentials per image) cut attention 765 → 546 ms single-thread

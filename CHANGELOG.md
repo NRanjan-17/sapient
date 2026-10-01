@@ -5,15 +5,19 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
-### 👁️ Vision tower 41% faster (bit-identical)
+### 👁️ Vision tower ~45% faster (bit-identical)
 
-- SmolVLM image encode on Apple M4: **1140 → ~670 ms** (4 threads: 1410 → ~990 ms).
-  Three bit-identical changes: the element-wise map (GELU) runs in parallel for
-  large tensors; the head split/merge `permute` copies whole `head_dim` runs
-  (this also speeds LLM prefill); and the blocked W8A8 GEMM processes four
-  activation rows per weight row (`dot_q8_0_row_sdot_x4`, bit-identity-tested).
-- `SAPIENT_VISION_TIMING=1` prints the tower's per-stage breakdown.
-- Not yet measured on a Raspberry Pi with these kernels (v0.5.2 there: 7.3 s).
+- SmolVLM image encode: **Apple M4 1140 → ~605 ms** (4 threads: 1410 → ~760 ms);
+  **Raspberry Pi 5 7.3 s (v0.5.2) → 4.3 s**. Four bit-identical changes: the
+  element-wise map (GELU) runs in parallel for large tensors; the head
+  split/merge `permute` copies whole `head_dim` runs (also speeds LLM prefill);
+  the blocked W8A8 GEMM processes four activation rows per weight row
+  (`dot_q8_0_row_sdot_x4`); and it now walks cache-sized activation panels —
+  on the Pi the old loop was memory-bandwidth-bound.
+- `SAPIENT_VISION_TIMING=1` prints the tower's per-stage breakdown;
+  `SAPIENT_Q8_PANEL_KB` overrides the panel size for tuning.
+- Fixed: `--no-default-features` builds failed to compile (`server.rs` referenced
+  the optional audio crate directly).
 
 ### 📏 Benchmark tooling and docs — measure what we say we measure
 

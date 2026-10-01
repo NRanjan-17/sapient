@@ -58,9 +58,9 @@
   embedding-splice into the existing Llama engine). Golden test (red fixture → "Red")
   + numeric grid-orientation probe. v1: single global 512² image (no sub-image
   splitting yet). MedGemma runs on the Gemma3 engine above. Tower perf
-  (2026-10-02): M4 image encode 1140 → ~670 ms via three bit-identical kernel
-  changes; open: Pi 5 re-measure (7.3 s on v0.5.2), the Q8_0 per-block f32 scale
-  tail, thread scaling — the path toward control-rate vision for VLA-class models.
+  (2026-10-02): image encode M4 1140 → ~605 ms, Pi 5 7.3 → 4.3 s via four
+  bit-identical kernel changes; open: tiled tower attention (largest Pi stage),
+  the Q8_0 per-block f32 scale tail, thread scaling — the path toward control-rate vision for VLA-class models.
   **Server (12.3) done:** `/v1/chat/completions` accepts OpenAI image parts as
   base64 data URIs, routed through `VlmPipeline` in a third LRU cache;
   remote image URLs are refused by design.

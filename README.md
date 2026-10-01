@@ -401,7 +401,7 @@ spoken language; `--language <code>` forces it and `--translate` outputs English
 
 | Alias | Family | Size | Notes |
 |---|---|---|---|
-| `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; ~1.3 s to first token on M4 (v0.6.0), ~0.8 s on main |
+| `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; ~1.3 s to first token on M4 (v0.6.0), ~0.7 s on main |
 | `openhorizon/gemma-3-4b` | Gemma3 multimodal | 4B | |
 | `openhorizon/medgemma-4b` | Gemma3 medical | 4B | X-ray / dermatology / pathology (gated) |
 
