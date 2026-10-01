@@ -357,6 +357,12 @@ Xcode does not re-link a changed xcframework at the same path. **Before
 testing on a phone, read `docs/MOBILE.md` §5** — the safe-testing ladder for
 personal hardware is a project rule, not a suggestion.
 
+### Repositories
+
+Source, issues and CI live in `SkidGod4444/sapient`. Release binaries are installed
+from `openhorizon-labs/sapient` (install scripts, `sapient update`, SDK packages) —
+keep download URLs pointing there and source links pointing here.
+
 ### Benchmarks
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
@@ -575,7 +581,7 @@ mobile SDK artifacts (`sapient-swift.zip`, `sapient-android.zip`,
 Install URLs in docs should point to release assets:
 
 ```bash
-curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 ```
 
 Do **not** use `raw.githubusercontent.com/.../main/install.sh` in user-facing docs — the CDN can serve stale scripts.
