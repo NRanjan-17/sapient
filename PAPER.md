@@ -53,6 +53,7 @@ thermal throttling; the claim is a **measured tail bound and miss rate**.
 | Experiment | Metric | Script | Status |
 |---|---|---|---|
 | LLM decode vs llama.cpp | tok/s, TTFT, peak RSS | `scripts/bench_loop.py` | **measured** (baseline below) |
+| LLM quality vs llama.cpp | perplexity, wikitext-2 | `scripts/bench_loop.py` (`sapient eval-ppl`) | **measured** (below) |
 | Vision encode latency and jitter | p50 / max / stdev, per stage | `scripts/bench_loop.py` | **measured** (M4; Pi by hand) |
 | VLA observation-to-action latency | p50 / p99 / jitter, Hz | — | blocked: no VLA runs |
 | Deadline-miss rate vs deadline | miss %, action quality | — | blocked |
@@ -81,6 +82,8 @@ Apple M4, 16 GB, CPU backend, 2026-10-02, `benchmarks/2026-10-02-m4-baseline.jso
 | Peak RSS, Qwen2.5-1.5B, MB | 1177 | — |
 | SmolVLM-256M image encode, p50 / max / stdev, ms | 606 / 659 / 30.8 | — |
 | Binary size (CPU build), MB | 52.4 | — |
+| Perplexity, Qwen2.5-1.5B Q4_K_M (wikitext-2, 5100 tokens) | 11.762 | 11.720 |
+| Perplexity, Llama-3.2-1B Q4_K_M | 16.508 | 16.259 |
 
 Run-to-run spread on this laptop is up to about 8% (a run minutes earlier read
 71.2 tok/s on Llama-3.2-1B and 556 ms vision p50). Raspberry Pi 5 vision encode,
@@ -92,4 +95,7 @@ hand-timed the same day: 3.5 s (see `docs/BENCHMARKS.md`).
 - The Pi is reachable only for one pre-approved timing command; no scripted Pi suite.
 - Jetson access needs a password and is not available to the loop.
 - No WASM build and no `no_std` core exist.
-- No quality metric (perplexity, task success) is implemented.
+- Quality: perplexity is implemented (`sapient eval-ppl`); task success is not. The
+  Metal build's quality is unmeasured (needs Xcode's Metal Toolchain to build).
+- Sapient's perplexity is 0.4–1.5% worse than llama.cpp's on the same files; the cause
+  of the larger Llama-1B gap is not yet isolated.

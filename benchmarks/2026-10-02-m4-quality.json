@@ -1,0 +1,48 @@
+{
+  "date": "2026-10-02",
+  "machine": "Apple M4, 16 GB, CPU backend",
+  "text": "wikitext-2-raw wiki.test.raw",
+  "protocol": "20 non-overlapping 512-token chunks, second half of each scored (llama.cpp perplexity protocol); all three runs score the same 5100 tokens",
+  "llama_cpp_build": "0.5.0 (build 11146, commit 7fe450e19), -ngl 0 -t 4",
+  "sapient": "main 453a01e + eval-ppl (loop/002-perplexity)",
+  "models": {
+    "openhorizon/qwen2.5-1.5b-q4": {
+      "llama_cpp": {
+        "perplexity": 11.7199,
+        "stderr": 0.44945
+      },
+      "sapient_default_q8k_activations": {
+        "perplexity": 11.7621,
+        "stderr": 0.4503,
+        "vs_llama_cpp_pct": 0.36
+      },
+      "sapient_per32_activations (SAPIENT_Q8K_ACT=0)": {
+        "perplexity": 11.7375,
+        "stderr": 0.4486,
+        "vs_llama_cpp_pct": 0.15
+      },
+      "q8k_vs_per32_pct": 0.21
+    },
+    "openhorizon/llama-3.2-1b-q4": {
+      "llama_cpp": {
+        "perplexity": 16.2589,
+        "stderr": 0.66384
+      },
+      "sapient_default_q8k_activations": {
+        "perplexity": 16.5077,
+        "stderr": 0.6799,
+        "vs_llama_cpp_pct": 1.53
+      },
+      "sapient_per32_activations (SAPIENT_Q8K_ACT=0)": {
+        "perplexity": 16.4639,
+        "stderr": 0.678,
+        "vs_llama_cpp_pct": 1.26
+      },
+      "q8k_vs_per32_pct": 0.27
+    }
+  },
+  "notes": [
+    "The stderr values are for the absolute estimate. The three runs score identical tokens, so differences between them are paired and much tighter than the stderr suggests; a per-token paired interval is not computed yet.",
+    "Metal (MLX 4-bit re-quantization) is not measured: building --features mlx needs Xcode's Metal Toolchain component, which is not installed on this machine."
+  ]
+}

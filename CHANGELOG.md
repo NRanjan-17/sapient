@@ -5,6 +5,13 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 🎯 Perplexity gate
+
+- `sapient eval-ppl` (hidden) scores a text file with llama.cpp's perplexity protocol,
+  so quality can be compared on the same GGUF. First numbers (Apple M4 CPU, wikitext-2):
+  Qwen2.5-1.5B 11.76 vs llama.cpp 11.72; Llama-3.2-1B 16.51 vs 16.26.
+- `scripts/bench_loop.py` now records a `quality` section.
+
 ### 🔁 Optimisation-loop scaffolding
 
 - `scripts/bench_loop.py` — one-command reproducible baseline (LLM decode / TTFT /
