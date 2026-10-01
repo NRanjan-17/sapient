@@ -1,9 +1,9 @@
 <div align="center">
   <h1>⚡ SAPIENT</h1>
-  <p><strong>A fast, pure-Rust edge inference engine for language, vision, and speech models — one command to install, one line to run</strong></p>
+  <p><strong>An edge inference engine written in Rust for language, vision, and speech models — one command to install, one line to run</strong></p>
   <p>
     <a href="https://github.com/SkidGod4444/sapient/releases"><img src="https://img.shields.io/github/v/release/SkidGod4444/sapient" alt="Release"/></a>
-    <a href="https://github.com/SkidGod4444/sapient/actions"><img src="https://github.com/SkidGod4444/sapient/workflows/CI/badge.svg" alt="CI"/></a>
+    <a href="https://github.com/SkidGod4444/sapient/actions"><img src="https://github.com/SkidGod4444/sapient/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20or%20commercial-blue" alt="License"/>
     <img src="https://img.shields.io/badge/rust-1.82%2B-orange" alt="MSRV"/>
     <img src="https://img.shields.io/github/downloads/SkidGod4444/sapient/total" alt="Downloads"/>
@@ -38,11 +38,6 @@ irm https://github.com/SkidGod4444/sapient/releases/latest/download/install.ps1 
 > (or `gpu`) on the `sh` install, or `$env:SAPIENT_VARIANT="cpu"` on Windows. Later,
 > `sapient update` will ask which build you want whenever your machine has a GPU
 > (or pass `--gpu` / `--cpu` / `--metal`).
-
-### Homebrew (macOS)
-
-The Homebrew tap is not currently published — use the install script above or a
-direct download.
 
 ### Direct Download
 
@@ -114,8 +109,8 @@ sapient see xray.png -p "Describe findings." --model medgemma-4b   # medical (ga
 
 # Voice conversation — a STREAMING loop: speech is transcribed while you're
 # still talking, the reply starts speaking after its first clause, and you can
-# interrupt it mid-sentence (barge-in). ~2.4 s perceived reply latency on an
-# M-series CPU; per-turn latency breakdown printed live.
+# interrupt it mid-sentence (barge-in). About 2 s from end of speech to first reply
+# audio on an M4 CPU (measured 2026-07); per-turn latency breakdown printed live.
 # (Live mic; Linux needs libasound2-dev; macOS prompts for mic permission.)
 sapient converse qwen2.5-1.5b --stt whisper-base
 sapient converse qwen2.5-1.5b --speak   # speak replies aloud (Kokoro-82M)
@@ -132,13 +127,14 @@ sapient rm openhorizon/phi-2   # remove one model
 sapient reset                  # clear entire cache
 
 # OpenAI-compatible HTTP server (lazy model load on first request)
-sapient serve --port 8080
-sapient serve --port 8080 --speculative
+sapient serve                    # listens on 127.0.0.1:11435 (--port to change)
+sapient serve --speculative
 
 # Update sapient to the latest release
+# (v0.5.x and older cannot self-update — re-run the install script once)
 sapient update
 
-# Gated models (Llama, Mistral) — set token first
+# Gated models (medgemma-4b, llama-3.2-3b, mistral-7b) — set a Hugging Face token first
 sapient login
 
 # Show config/architecture info for a model
@@ -355,7 +351,7 @@ Pointing a command at the wrong category fails fast with a clear hint (e.g.
 | `openhorizon/phi-4-mini` | Phi | 3.8B Q4_K_M | |
 | `openhorizon/qwen2.5-0.5b` | Qwen2.5 | 0.5B | Smallest chat model; great for quick tests |
 | `openhorizon/qwen2.5-1.5b` / `-3b` | Qwen2.5 | 1.5B / 3B | |
-| `openhorizon/qwen2.5-0.5b-q4` / `-1.5b-q4` | Qwen2.5 | 0.5B / 1.5B Q4_K_M | |
+| `openhorizon/qwen2.5-0.5b-q4` / `-1.5b-q4` / `-3b-q4` | Qwen2.5 | 0.5B / 1.5B / 3B Q4_K_M | 3B is the smallest we recommend for tool calling |
 | `openhorizon/qwen2.5-coder-0.5b` / `-1.5b` | Qwen2.5 | 0.5B / 1.5B Q4_K_M | Code-tuned |
 | `openhorizon/smollm2-135m-q4` | Llama | 135M Q4_K_M | Tiniest model in the catalog |
 | `openhorizon/smollm2-360m` (+ `-q4`) | Llama | 360M | |
@@ -401,7 +397,7 @@ spoken language; `--language <code>` forces it and `--translate` outputs English
 
 | Alias | Family | Size | Notes |
 |---|---|---|---|
-| `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; ~1.3 s to first token on M4 (v0.6.0), ~0.7 s on main |
+| `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; ~1.3 s to first token on an M4 with v0.6.0 (about 0.6 s with the 2026-10 kernels, not yet in a release) |
 | `openhorizon/gemma-3-4b` | Gemma3 multimodal | 4B | |
 | `openhorizon/medgemma-4b` | Gemma3 medical | 4B | X-ray / dermatology / pathology (gated) |
 
@@ -465,8 +461,8 @@ microkernels ~2.6× on dense decode; closing that is its own roadmap project.)
 
 ### Sparse MoE — big models on small devices (v0.5.3)
 
-A **47B Mixtral-8x7B** and a **106B GLM-4.5-Air** run fully on-device in pure Rust,
-**zero CUDA**, on a Jetson AGX Thor (14× Neoverse, CPU path):
+A **47B Mixtral-8x7B** and a **106B GLM-4.5-Air** run fully on-device on a Jetson AGX
+Thor's CPU (14× Neoverse) — no CUDA or JetPack involved:
 
 | Model (Q4_K_M GGUF) | Decode | Prefill | Peak RSS |
 |---|---|---|---|
@@ -569,10 +565,10 @@ pipeline. No model is loaded at startup — the first API request triggers model
 and load automatically (Ollama-style lazy loading).
 
 ```bash
-# Start the server (lazy model load on first request)
-sapient serve --port 8080
+# Start the server (lazy model load on first request; default port 11435)
+sapient serve
 
-# With speculative decoding enabled
+# With speculative decoding enabled, on another port
 sapient serve --port 8080 --speculative
 ```
 
@@ -595,7 +591,7 @@ instant instead of a cold reload.
 Example with `curl`:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "openhorizon/qwen2.5-0.5b-q4",
@@ -604,7 +600,7 @@ curl http://localhost:8080/v1/chat/completions \
 ```
 
 The server is compatible with any OpenAI-client SDK or tool (LangChain, LlamaIndex, etc.)
-by pointing the base URL at `http://localhost:8080/v1`.
+by pointing the base URL at `http://localhost:11435/v1`.
 
 ### Tool calling — a local backend for agents
 
@@ -615,7 +611,7 @@ can drive SAPIENT unmodified. Point the Vercel AI SDK, LangChain, or the OpenAI 
 Use a **tool-trained** model — every `qwen2.5-*` alias resolves to Qwen2.5-Instruct, which is:
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:11435/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen2.5-3b",
@@ -661,7 +657,7 @@ at. Under `required` it calls the tool instead.
 ### Text-to-speech
 
 ```bash
-curl http://localhost:8080/v1/audio/speech \
+curl http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model": "kokoro-82m", "input": "Hello from your own silicon.", "voice": "af_heart"}' \
   --output hello.wav
@@ -674,8 +670,12 @@ and rejects other formats loudly rather than mislabelling WAV bytes as `audio/mp
 
 ## HuggingFace Token (Gated Models)
 
-For models that require access approval (currently only `medgemma-4b` — accept
-Google's Health AI Developer Foundations terms on Hugging Face first):
+For models whose upstream Hugging Face repo requires access approval — accept the
+terms on the model's Hugging Face page first, then provide a token:
+
+- `medgemma-4b` (Google's Health AI Developer Foundations terms)
+- `llama-3.2-3b` (Meta) — the `-q4` GGUF alias downloads from an ungated mirror
+- `mistral-7b` (Mistral AI) — likewise, `mistral-7b-q4` needs no token
 
 ```bash
 # Set via environment variable
@@ -689,7 +689,9 @@ sapient login
 
 ## Architecture
 
-Built in Rust for maximum performance, with zero dependencies on Python, ONNX Runtime, or CUDA.
+Written in Rust, with no dependency on Python, ONNX Runtime, or CUDA. (The inference
+kernels are Rust; a few dependencies carry C/C++ — the Hugging Face tokenizer's regex
+engine, TLS, and Apple's MLX in the `-metal` build.)
 
 ```
 sapient-cli               ← the `sapient` binary (chat, see, transcribe, speak, converse, serve, stats, …)
