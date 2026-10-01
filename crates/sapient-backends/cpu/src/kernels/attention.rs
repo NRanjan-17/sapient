@@ -417,7 +417,6 @@ mod tests {
     /// Verify that the online-softmax result matches a reference naïve implementation.
     #[test]
     fn flash_matches_naive() {
-        use std::f32;
         let batch = 1;
         let n_heads = 2;
         let seq_q = 4;
