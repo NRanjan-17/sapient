@@ -92,9 +92,9 @@ llama.cpp and Ollama run it at 8-bit.
 
 | Vision encode | before | after | change |
 |---|---:|---:|---:|
-| Apple M4, 10 threads | 1140 ms | **~605 ms** | −47% |
-| Apple M4, 4 threads (`RAYON_NUM_THREADS=4`) | 1410 ms | **~760 ms** | −46% |
-| Raspberry Pi 5 (4× Cortex-A76) | 7.2–7.4 s (v0.5.2 release) | **4.26 s** (3 runs: 4257–4269 ms) | −42% |
+| Apple M4, 10 threads | 1140 ms | **~555 ms** | −51% |
+| Apple M4, 4 threads (`RAYON_NUM_THREADS=4`) | 1410 ms | **~750 ms** | −47% |
+| Raspberry Pi 5 (4× Cortex-A76) | 7.2–7.4 s (v0.5.2 release) | **3.5–3.6 s** (3 runs: 3509–3603 ms) | −51% |
 
 "Before" on the M4 is main at v0.6.0-level kernels (the 3.0 s in the
 vision-language table further down predates the blocked W8A8 GEMM). "Before" on
@@ -102,8 +102,8 @@ the Pi is the installed v0.5.2 release binary; "after" is this branch
 cross-compiled (`--no-default-features`, `target-cpu=cortex-a76`). Pi prefill for
 the 79-token prompt also dropped 0.58 → 0.27 s.
 
-Four changes, all bit-identical (reply text, `vlm_e2e`, `vlm_geometry_probe` and
-two new kernel bit-identity tests all pass):
+Five changes, all bit-identical (reply text, `vlm_e2e`, `vlm_geometry_probe` and
+three new bit-identity tests all pass):
 
 1. **Parallel element-wise map** (`unary_f32` ≥ 65k elements): the tower's GELU was
    one single-threaded pass over 3M elements per layer — 255 → 40 ms.
@@ -123,15 +123,23 @@ two new kernel bit-identity tests all pass):
    from 5.5 → 4.3 s (fc2 1300 → ~560 ms). Panel sweep on the Pi: 8–128 KB within
    ~2%, 512 KB +7%, no panelling +28% (`SAPIENT_Q8_PANEL_KB` overrides).
 
+5. **Tiled tower attention.** The dense attention built a full `seq × seq` score
+   matrix per head (4 MB at 1024 patches) and streamed it three times. It now
+   works in tiles of query rows — score block, softmax and `S·V` while the block
+   is cache-resident — with (head, tile) pairs in parallel. Pi attention
+   1560 → ~850 ms (tower 4.26 → 3.5 s); M4 160 → ~122 ms. Tile sweep on the Pi
+   (attention ms): 16 KB 3542 · 64 KB 1078 · **256 KB 846** · 1 MB 987 ·
+   untiled 1051 — small tiles lose to SGEMM re-packing K/V per call
+   (`SAPIENT_ATTN_TILE_KB` overrides).
+
 Stage split after (ms):
 
 | | norm | q/k/v | attention | out_proj | fc1 | GELU | fc2 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| M4, 10 threads | 26 | 103 | 160 | 34 | 126 | 41 | 95 |
-| Pi 5 | 73 | ~690 | **~1560** | ~235 | ~930 | ~187 | ~550 |
+| M4, 10 threads | 26 | 100 | 122 | 34 | 122 | 40 | 92 |
+| Pi 5 | 69 | ~670 | ~850 | ~230 | **~910** | ~180 | ~530 |
 
-On the Pi, attention is now the largest stage (36%): two f32 GEMMs per head over
-4 MB score matrices plus ~150M scalar exponentials.
+On the Pi the four Q8_0 linears are now ~2.3 s of the 3.5 s.
 
 **Measured, not adopted:** a 4-wide NEON polynomial `exp` for the attention
 softmax (~150M exponentials per image) cut attention 765 → 546 ms single-thread

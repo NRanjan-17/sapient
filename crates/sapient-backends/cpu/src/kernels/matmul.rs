@@ -314,6 +314,52 @@ fn dot_f32_x_f16(a: &[f32], b: &[u16]) -> f32 {
         .sum()
 }
 
+/// Single-threaded `C[m, n] = A[m, k] · B[k, n]` on raw slices, with `B`
+/// addressed by strides (`B[r][c] = b[r·b_rs + c·b_cs]`) so a transposed
+/// operand needs no copy. For callers that tile a large product themselves and
+/// parallelise over the tiles (the vision tower's dense attention): each call
+/// is the same K reduction as one big SGEMM, so tiling over rows of `A` is
+/// bit-identical to the untiled product.
+pub fn sgemm_serial(
+    m: usize,
+    k: usize,
+    n: usize,
+    a: &[f32],
+    b: &[f32],
+    b_rs: usize,
+    b_cs: usize,
+    c: &mut [f32],
+) {
+    assert!(a.len() >= m * k, "sgemm_serial: A too short");
+    assert!(c.len() >= m * n, "sgemm_serial: C too short");
+    assert!(
+        k == 0 || n == 0 || (k - 1) * b_rs + (n - 1) * b_cs < b.len(),
+        "sgemm_serial: B too short"
+    );
+    if m == 0 || k == 0 || n == 0 {
+        return;
+    }
+    // SAFETY: bounds for all three operands are asserted above.
+    unsafe {
+        matrixmultiply::sgemm(
+            m,
+            k,
+            n,
+            1.0,
+            a.as_ptr(),
+            k as isize,
+            1,
+            b.as_ptr(),
+            b_rs as isize,
+            b_cs as isize,
+            0.0,
+            c.as_mut_ptr(),
+            n as isize,
+            1,
+        );
+    }
+}
+
 fn matmul_nt_float(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Result<Tensor> {
     // F16 GEMV decode: convert F16 weights to F32 per-row inside NEON registers —
     // never allocates an intermediate F32 copy of the weight matrix.
