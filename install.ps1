@@ -1,5 +1,5 @@
 # SAPIENT Windows Installer (PowerShell)
-# Usage: irm https://github.com/SkidGod4444/sapient/releases/latest/download/install.ps1 | iex
+# Usage: irm https://github.com/openhorizon-labs/sapient/releases/latest/download/install.ps1 | iex
 #
 # Installs the sapient CLI to %LOCALAPPDATA%\sapient\bin and adds it to PATH.
 
@@ -9,7 +9,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repo = "SkidGod4444/sapient"
+# Release binaries are served from the openhorizon-labs distribution repo;
+# the source lives in $SourceRepo.
+$Repo = "openhorizon-labs/sapient"
+$SourceRepo = "SkidGod4444/sapient"
 $BinaryName = "sapient.exe"
 
 # GitHub API requires a User-Agent; TLS 1.2 for Windows PowerShell 5.1
@@ -193,7 +196,7 @@ function Write-PostInstall {
     Write-Host "    sapient run <model> --prompt ""Hello""" -NoNewline; Write-Host " # One-shot" -ForegroundColor DarkGray
     Write-Host "    sapient --help                           " -NoNewline; Write-Host "# Full help" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "  Docs: https://github.com/$Repo" -ForegroundColor Cyan
+    Write-Host "  Docs: https://github.com/$SourceRepo" -ForegroundColor Cyan
     Write-Host ""
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # SAPIENT Installer
-# Usage: curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/install.sh | sh
+# Usage: curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 #
 # Supported platforms:
 #   macOS  — Apple Silicon (arm64) + Intel (x86_64)
@@ -9,7 +9,10 @@
 
 set -e
 
-REPO="SkidGod4444/sapient"
+# Release binaries are served from the openhorizon-labs distribution repo;
+# the source lives in SOURCE_REPO.
+REPO="openhorizon-labs/sapient"
+SOURCE_REPO="SkidGod4444/sapient"
 BINARY_NAME="sapient"
 INSTALL_DIR="${SAPIENT_INSTALL_DIR:-/usr/local/bin}"
 
@@ -98,7 +101,7 @@ detect_platform() {
       EXT="tar.gz"
       ;;
     MINGW*|MSYS*|CYGWIN*)
-      error "Please use the PowerShell installer on Windows:\n  irm https://raw.githubusercontent.com/SkidGod4444/sapient/main/install.ps1 | iex"
+      error "Please use the PowerShell installer on Windows:\n  irm https://github.com/openhorizon-labs/sapient/releases/latest/download/install.ps1 | iex"
       ;;
     *)
       error "Unsupported OS: $OS"
@@ -263,7 +266,7 @@ post_install() {
   printf "    ${CYAN}sapient update${RESET}                       # Update sapient\n"
   printf "    ${CYAN}sapient --help${RESET}                       # Full command reference\n\n"
 
-  printf "  Docs & source: ${BOLD}https://github.com/${REPO}${RESET}\n\n"
+  printf "  Docs & source: ${BOLD}https://github.com/${SOURCE_REPO}${RESET}\n\n"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────

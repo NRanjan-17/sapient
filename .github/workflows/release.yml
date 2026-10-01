@@ -417,11 +417,12 @@ jobs:
   # ── SwiftPM package repo → openhorizon-labs/sapient-swift ───────────────────────
   # Consumers add https://github.com/openhorizon-labs/sapient-swift by URL in Xcode;
   # its Package.swift points a remote binaryTarget at this release's
-  # SapientFFI.xcframework.zip asset. Runs after `release` so the asset URL is
-  # live before the package tag exists.
+  # SapientFFI.xcframework.zip asset on the openhorizon-labs/sapient distribution
+  # release. Runs after `release-dist` so that asset URL is live before the
+  # package tag exists.
   dist-swift:
     name: SwiftPM repo → openhorizon-labs/sapient-swift
-    needs: [release, mobile-swift]
+    needs: [release, release-dist, mobile-swift]
     runs-on: ubuntu-latest
     steps:
       - name: Download Swift artifacts
@@ -458,7 +459,7 @@ jobs:
               targets: [
                   .binaryTarget(
                       name: "SapientFFI",
-                      url: "https://github.com/SkidGod4444/sapient/releases/download/${TAG}/SapientFFI.xcframework.zip",
+                      url: "https://github.com/openhorizon-labs/sapient/releases/download/${TAG}/SapientFFI.xcframework.zip",
                       checksum: "${CHECKSUM}"),
                   .target(
                       name: "Sapient",

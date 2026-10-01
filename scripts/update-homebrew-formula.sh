@@ -7,7 +7,7 @@
 set -e
 
 VERSION="${1:?Usage: $0 <version-tag, e.g. v0.1.0>}"
-REPO="SkidGod4444/sapient"
+REPO="openhorizon-labs/sapient"
 FORMULA="Formula/sapient.rb"
 
 fetch_sha256() {

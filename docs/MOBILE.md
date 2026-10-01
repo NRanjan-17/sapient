@@ -116,7 +116,7 @@ refreshed automatically by every release:
 | **Swift (iOS/macOS)** | Xcode → *Add Package Dependencies* → `https://github.com/openhorizon-labs/sapient-swift` (remote binaryTarget — the XCFramework downloads itself) |
 | **Kotlin (Android)** | `maven { url = uri("https://raw.githubusercontent.com/openhorizon-labs/sapient-android/main") }` + `implementation("so.openhorizon:sapient:<version>")` (JNA + coroutines come as transitive deps) |
 | **Node.js / RN (HTTP)** | `npm install @openhorizon-labs/sapient` |
-| **Manual / offline** | `sapient-swift.zip` / `sapient-android.zip` on every [release](https://github.com/SkidGod4444/sapient/releases) — the same artifacts, as a local Swift Package / drop-in Gradle module |
+| **Manual / offline** | `sapient-swift.zip` / `sapient-android.zip` on every [release](https://github.com/openhorizon-labs/sapient/releases) — the same artifacts, as a local Swift Package / drop-in Gradle module |
 
 > **License:** SAPIENT is **GPL-3.0-only** — an app that embeds these SDKs
 > (statically or as a bundled library) is subject to the GPL's terms. If

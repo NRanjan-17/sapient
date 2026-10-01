@@ -5,6 +5,13 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 📦 `openhorizon-labs/sapient` is the canonical download location
+
+- `install.sh`, `install.ps1`, the README install commands and release badges, the
+  Homebrew formula URLs, and the SwiftPM binary URL now all point at the
+  `openhorizon-labs/sapient` release (the same place `sapient update` already
+  used). Source links stay on `SkidGod4444/sapient`, where the code lives.
+
 ### 📖 README refresh
 
 - New "What it is" and quick-start sections; CLI commands grouped by task; the
