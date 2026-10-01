@@ -1252,7 +1252,7 @@ async fn handle_audio_speech(
     let synth = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let samples = engine.synthesize_as(&input, &voice, speed)?;
-        Ok::<_, anyhow::Error>(sapient_audio::encode_wav(&samples, sample_rate))
+        Ok::<_, anyhow::Error>(sapient_generate::encode_wav(&samples, sample_rate))
     })
     .await;
 

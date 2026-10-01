@@ -784,6 +784,10 @@ sapient bench-llm openhorizon/qwen2.5-0.5b-q4 \
 sapient bench-llm openhorizon/qwen2.5-0.5b-q4 --json > results.json
 ```
 
+For the vision tower (`sapient see`), `SAPIENT_VISION_TIMING=1` prints a per-stage
+breakdown (norm / q,k,v / attention / out_proj / fc1 / GELU / fc2) — see the
+2026-10-02 vision section of `docs/BENCHMARKS.md`.
+
 `bench-llm` also accepts a local `.gguf` path. Metrics reported: model load time,
 time-to-first-token (prefill + first token), **decode-only** tok/s
 (`(tokens − 1) / (t_last − t_first)`, greedy, exact token count), and peak RSS

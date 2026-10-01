@@ -314,6 +314,52 @@ fn dot_f32_x_f16(a: &[f32], b: &[u16]) -> f32 {
         .sum()
 }
 
+/// Single-threaded `C[m, n] = A[m, k] · B[k, n]` on raw slices, with `B`
+/// addressed by strides (`B[r][c] = b[r·b_rs + c·b_cs]`) so a transposed
+/// operand needs no copy. For callers that tile a large product themselves and
+/// parallelise over the tiles (the vision tower's dense attention): each call
+/// is the same K reduction as one big SGEMM, so tiling over rows of `A` is
+/// bit-identical to the untiled product.
+pub fn sgemm_serial(
+    m: usize,
+    k: usize,
+    n: usize,
+    a: &[f32],
+    b: &[f32],
+    b_rs: usize,
+    b_cs: usize,
+    c: &mut [f32],
+) {
+    assert!(a.len() >= m * k, "sgemm_serial: A too short");
+    assert!(c.len() >= m * n, "sgemm_serial: C too short");
+    assert!(
+        k == 0 || n == 0 || (k - 1) * b_rs + (n - 1) * b_cs < b.len(),
+        "sgemm_serial: B too short"
+    );
+    if m == 0 || k == 0 || n == 0 {
+        return;
+    }
+    // SAFETY: bounds for all three operands are asserted above.
+    unsafe {
+        matrixmultiply::sgemm(
+            m,
+            k,
+            n,
+            1.0,
+            a.as_ptr(),
+            k as isize,
+            1,
+            b.as_ptr(),
+            b_rs as isize,
+            b_cs as isize,
+            0.0,
+            c.as_mut_ptr(),
+            n as isize,
+            1,
+        );
+    }
+}
+
 fn matmul_nt_float(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Result<Tensor> {
     // F16 GEMV decode: convert F16 weights to F32 per-row inside NEON registers —
     // never allocates an intermediate F32 copy of the weight matrix.
@@ -572,6 +618,28 @@ fn matmul_nt_q4_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
     Tensor::from_f32_vec(out, Shape::new([m, n]))
 }
 
+/// Activation-panel size for the blocked W8A8 GEMM, in bytes of int8
+/// activations (panel rows = this / k). Swept on a Pi 5 (Cortex-A76, 64 KB L1 /
+/// 512 KB L2): 8–128 KB are within ~2% of each other, 512 KB is +7%, and no
+/// panelling at all is +28% (SmolVLM tower, 4.3 s vs 5.5 s). 32 KB was the best
+/// reading on both the Pi and an M4.
+#[cfg(target_arch = "aarch64")]
+const Q8_GEMM_PANEL_BYTES: usize = 32 * 1024;
+
+/// Panel size in bytes, overridable for tuning with `SAPIENT_Q8_PANEL_KB`.
+#[cfg(target_arch = "aarch64")]
+fn q8_gemm_panel_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("SAPIENT_Q8_PANEL_KB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&kb| kb > 0)
+            .map(|kb| kb * 1024)
+            .unwrap_or(Q8_GEMM_PANEL_BYTES)
+    })
+}
+
 fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Result<Tensor> {
     if k % QUANT_BLOCK_SIZE != 0 {
         return Err(SapientError::internal(
@@ -618,6 +686,15 @@ fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
                     xs.copy_from_slice(&qs);
                 });
 
+            // Block-major copy of the activation scales ([bpr][m]) so the x4
+            // tile loads four rows' scales for a block as one vector.
+            let mut x_scales_t = vec![0.0f32; bpr * m];
+            for (i, xs) in x_scales.chunks_exact(bpr).enumerate() {
+                for (bi, &v) in xs.iter().enumerate() {
+                    x_scales_t[bi * m + i] = v;
+                }
+            }
+
             let mut out_t = vec![0.0f32; n * m]; // [n, m]
             let wchunk = gemv_chunk(n);
             out_t
@@ -625,18 +702,51 @@ fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
                 .enumerate()
                 .for_each(|(ci, oc)| {
                     let j0 = ci * wchunk;
-                    for (jl, orow) in oc.chunks_mut(m).enumerate() {
+                    let rows = oc.len() / m;
+                    // This chunk's weight scales, widened once.
+                    let mut w_scales = vec![0.0f32; rows * bpr];
+                    for (jl, ws) in w_scales.chunks_exact_mut(bpr).enumerate() {
                         let j = j0 + jl;
-                        let wrow = &w_blocks[j * row_bytes..(j + 1) * row_bytes];
-                        for (i, slot) in orow.iter_mut().enumerate() {
-                            // SAFETY: dotprod verified above.
-                            *slot = unsafe {
-                                quant::dot_q8_0_row_sdot(
-                                    wrow,
-                                    &x_i8[i * k..(i + 1) * k],
-                                    &x_scales[i * bpr..(i + 1) * bpr],
-                                )
-                            };
+                        quant::q8_0_row_scales(&w_blocks[j * row_bytes..(j + 1) * row_bytes], ws);
+                    }
+                    let xi = |i: usize| &x_i8[i * k..(i + 1) * k];
+                    let xs = |i: usize| &x_scales[i * bpr..(i + 1) * bpr];
+                    // Activation PANELS: sweeping all m rows per weight row
+                    // streams m·k bytes (3 MB for a 1024-patch tower) per row —
+                    // fine in an M-series L2, DRAM-bound on a Pi 5 (measured:
+                    // the tower's linears matched the bandwidth roofline). A
+                    // panel is sized to stay cache-resident while this chunk's
+                    // weight rows (≈60–160 KB) pass over it. Each output is the
+                    // same kernel call as before → bit-identical.
+                    let panel = (q8_gemm_panel_bytes() / k).max(4) / 4 * 4;
+                    for p0 in (0..m).step_by(panel) {
+                        let p1 = (p0 + panel).min(m);
+                        let q1 = p0 + (p1 - p0) / 4 * 4;
+                        for (jl, orow) in oc.chunks_mut(m).enumerate() {
+                            let j = j0 + jl;
+                            let wrow = &w_blocks[j * row_bytes..(j + 1) * row_bytes];
+                            let ws = &w_scales[jl * bpr..(jl + 1) * bpr];
+                            // Four activation rows per pass through the weight
+                            // row (see dot_q8_0_row_sdot_x4), then the < 4
+                            // remainder of the last panel.
+                            for i in (p0..q1).step_by(4) {
+                                // SAFETY: dotprod verified above.
+                                let r = unsafe {
+                                    quant::dot_q8_0_row_sdot_x4(
+                                        wrow,
+                                        ws,
+                                        [xi(i), xi(i + 1), xi(i + 2), xi(i + 3)],
+                                        &x_scales_t,
+                                        m,
+                                        i,
+                                    )
+                                };
+                                orow[i..i + 4].copy_from_slice(&r);
+                            }
+                            for (i, slot) in orow.iter_mut().enumerate().take(p1).skip(q1) {
+                                // SAFETY: dotprod verified above.
+                                *slot = unsafe { quant::dot_q8_0_row_sdot(wrow, xi(i), xs(i)) };
+                            }
                         }
                     }
                 });
@@ -1346,6 +1456,45 @@ mod tests {
                     "row {i} col {j}: {} vs {}",
                     full[i * n + j],
                     want[j]
+                );
+            }
+        }
+    }
+
+    /// The blocked m ≥ 8 path (x4 tile + activation panels) must be
+    /// bit-identical to row-at-a-time calls, across several panels and with a
+    /// non-multiple-of-4 row count.
+    #[test]
+    fn matmul_nt_q8_0_blocked_matches_per_row() {
+        let n_out = 5;
+        let k = 2048; // panel = 16 rows → m = 131 spans 9 panels, remainder 3
+        let m = 131;
+        let w_f32: Vec<f32> = (0..n_out * k)
+            .map(|i| ((i * 7 % 61) as f32 - 30.0) * 0.013)
+            .collect();
+        let w_blocks: Vec<u8> = w_f32
+            .chunks_exact(k)
+            .flat_map(|row| {
+                row.chunks_exact(32)
+                    .flat_map(super::quant::quantize_q8_0_block)
+                    .collect::<Vec<u8>>()
+            })
+            .collect();
+        let w_q = Tensor::from_quant_bytes(&w_blocks, vec![n_out, k], DType::Q8_0).unwrap();
+        let x_f32: Vec<f32> = (0..m * k)
+            .map(|i| ((i * 31 % 257) as f32 - 128.0) * 0.004 + if i % 977 == 0 { 9.0 } else { 0.0 })
+            .collect();
+
+        let x_all = Tensor::from_f32(&x_f32, vec![m, k]).unwrap();
+        let blocked = matmul_nt(&x_all, &w_q).unwrap().to_f32_vec();
+        for i in 0..m {
+            let x_row = Tensor::from_f32(&x_f32[i * k..(i + 1) * k], vec![1, k]).unwrap();
+            let single = matmul_nt(&x_row, &w_q).unwrap().to_f32_vec();
+            for j in 0..n_out {
+                assert_eq!(
+                    blocked[i * n_out + j].to_bits(),
+                    single[j].to_bits(),
+                    "row {i} col {j}"
                 );
             }
         }

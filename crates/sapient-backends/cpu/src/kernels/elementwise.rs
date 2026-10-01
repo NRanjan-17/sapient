@@ -11,15 +11,28 @@ use sapient_core::{DType, Tensor};
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
+/// Below this many elements the rayon fork/join costs more than the map.
+const UNARY_PAR_MIN: usize = 1 << 16;
+
 /// Apply a unary f32 function element-wise.
-fn unary_f32<F: Fn(f32) -> f32>(x: &Tensor, f: F) -> Result<Tensor> {
+///
+/// Large tensors (a vision tower's `[1024, 3072]` MLP activation is 3M
+/// elements per layer) map in parallel — element-wise, so bit-identical to the
+/// serial path.
+fn unary_f32<F: Fn(f32) -> f32 + Sync>(x: &Tensor, f: F) -> Result<Tensor> {
     if x.dtype() != DType::F32 {
         return Err(SapientError::TypeMismatch {
             expected: "f32".into(),
             got: x.dtype().to_string(),
         });
     }
-    let data: Vec<f32> = x.to_f32_cow().iter().map(|&v| f(v)).collect();
+    let src = x.to_f32_cow();
+    let data: Vec<f32> = if src.len() >= UNARY_PAR_MIN {
+        use rayon::prelude::*;
+        src.par_iter().map(|&v| f(v)).collect()
+    } else {
+        src.iter().map(|&v| f(v)).collect()
+    };
     Tensor::from_f32(&data, x.shape().clone())
 }
 

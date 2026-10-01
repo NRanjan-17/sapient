@@ -179,11 +179,23 @@ impl SiglipVision {
         let mut x =
             Tensor::from_f32(&h, Shape::new([1, n_patch, c])).map_err(|e| anyhow!("{e}"))?;
 
+        // Per-stage wall-clock breakdown, printed under SAPIENT_VISION_TIMING
+        // (same idea as SAPIENT_KOKORO_TIMING): [norm, qkv, attn, out_proj, fc1, gelu, fc2].
+        let timing = std::env::var_os("SAPIENT_VISION_TIMING").is_some();
+        let mut st = [std::time::Duration::ZERO; 7];
+        let mut mark = std::time::Instant::now();
+        let mut lap = |i: usize, mark: &mut std::time::Instant| {
+            let now = std::time::Instant::now();
+            st[i] += now - *mark;
+            *mark = now;
+        };
+
         // ── 2. transformer blocks (pre-LN) ───────────────────────────────────
         for l in 0..self.cfg.layers {
             let p = format!("{}.encoder.layers.{l}", self.prefix);
             // attn
             let normed = self.layer_norm(&x, &format!("{p}.layer_norm1"))?;
+            lap(0, &mut mark);
             let q = split_heads(
                 &self.linear(&normed, &format!("{p}.self_attn.q_proj"))?,
                 self.cfg.heads,
@@ -199,16 +211,30 @@ impl SiglipVision {
                 self.cfg.heads,
                 self.head_dim,
             )?;
+            lap(1, &mut mark);
             let attn = dense_full_attention(&q, &k, &v, self.cfg.heads, self.head_dim)?;
             let attn = merge_heads(&attn)?;
+            lap(2, &mut mark);
             let attn = self.linear(&attn, &format!("{p}.self_attn.out_proj"))?;
             x = self.backend.add(&x, &attn).map_err(|e| anyhow!("{e}"))?;
+            lap(3, &mut mark);
             // mlp
             let normed = self.layer_norm(&x, &format!("{p}.layer_norm2"))?;
+            lap(0, &mut mark);
             let up = self.linear(&normed, &format!("{p}.mlp.fc1"))?;
+            lap(4, &mut mark);
             let up = gelu(&up).map_err(|e| anyhow!("{e}"))?; // gelu_pytorch_tanh
+            lap(5, &mut mark);
             let down = self.linear(&up, &format!("{p}.mlp.fc2"))?;
             x = self.backend.add(&x, &down).map_err(|e| anyhow!("{e}"))?;
+            lap(6, &mut mark);
+        }
+        if timing {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+            eprintln!(
+                "[vision] {} patches · norm {:.0} · qkv {:.0} · attn {:.0} · out_proj {:.0} · fc1 {:.0} · gelu {:.0} · fc2 {:.0} ms",
+                n_patch, ms(st[0]), ms(st[1]), ms(st[2]), ms(st[3]), ms(st[4]), ms(st[5]), ms(st[6])
+            );
         }
         let x = self.layer_norm(&x, &format!("{}.post_layernorm", self.prefix))?;
         Ok(x.to_f32_vec())
@@ -248,13 +274,34 @@ impl SiglipVision {
     }
 }
 
+/// Query rows per attention tile: a tile's score block is `rows × seq` f32.
+/// Swept on a Pi 5 (tower attention, ms): 16 KB 3542 · 64 KB 1078 · **256 KB
+/// 846** · 1 MB 987 · untiled 1051 — small tiles lose to SGEMM re-packing K/V
+/// on every call, large ones fall out of cache. 256 KB was also best-or-equal
+/// on an M4. `SAPIENT_ATTN_TILE_KB` overrides for tuning.
+fn attn_tile_rows(seq: usize) -> usize {
+    static KB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let kb = *KB.get_or_init(|| {
+        std::env::var("SAPIENT_ATTN_TILE_KB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&kb| kb > 0)
+            .unwrap_or(256)
+    });
+    (kb * 1024 / 4 / seq.max(1)).max(1)
+}
+
 /// Dense NON-CAUSAL attention for the vision tower: per head,
-/// `S = softmax(Q·Kᵀ/√d)`, `O = S·V` — both products through the parallel
-/// blocked SGEMM (`matmul_nt`). For 4096 patches this is far faster than the
-/// flash row-loop (which is shaped for long-KV DECODE, one query row at a
-/// time); the score matrix (64 MB/head at 4096²) is transient per head.
-/// Numerically standard max-subtracted softmax; results match the flash kernel
-/// within f32 reduction-order noise.
+/// `S = softmax(Q·Kᵀ/√d)`, `O = S·V`, through blocked SGEMM.
+///
+/// Tiled over query rows: each tile computes its `rows × seq` score block,
+/// softmaxes it and multiplies by V while it is still cache-resident, instead
+/// of materialising the whole `seq × seq` matrix per head (4 MB at 1024
+/// patches, 64 MB at 4096 — streamed three times on a small-cache CPU). Tiles
+/// are independent, so (head, tile) pairs run in parallel; each tile is the
+/// same K reduction as the untiled product → bit-identical to it. For long
+/// sequences this is still far faster than the flash row-loop, which is shaped
+/// for long-KV DECODE (one query row at a time).
 fn dense_full_attention(
     q: &Tensor,
     k: &Tensor,
@@ -262,68 +309,75 @@ fn dense_full_attention(
     n_heads: usize,
     head_dim: usize,
 ) -> Result<Tensor> {
+    let seq = q.shape().dims()[2];
+    dense_full_attention_tiled(q, k, v, n_heads, head_dim, attn_tile_rows(seq))
+}
+
+/// [`dense_full_attention`] with an explicit tile height (query rows per tile).
+fn dense_full_attention_tiled(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    n_heads: usize,
+    head_dim: usize,
+    tile: usize,
+) -> Result<Tensor> {
     use rayon::prelude::*;
+    use sapient_backends_cpu::kernels::matmul::sgemm_serial;
     let dims = q.shape().dims().to_vec(); // [1, h, seq, hd]
     let seq = dims[2];
-    let qv = q.to_f32_vec();
-    let kv = k.to_f32_vec();
-    let vv = v.to_f32_vec();
+    let qv = q.to_f32_cow();
+    let kv = k.to_f32_cow();
+    let vv = v.to_f32_cow();
     let scale = 1.0 / (head_dim as f32).sqrt();
-    let mut out = vec![0.0f32; n_heads * seq * head_dim];
+    let tile = tile.max(1);
+    let head_len = seq * head_dim;
+    let mut out = vec![0.0f32; n_heads * head_len];
 
-    // Heads are independent — parallelize the OUTER loop (the per-head GEMMs
-    // are thin in K = head_dim and gain little from inner splitting).
-    out.par_chunks_mut(seq * head_dim)
+    out.par_chunks_mut(head_len)
         .enumerate()
-        .try_for_each(|(h, out_h)| -> Result<()> {
-            let qh = &qv[h * seq * head_dim..(h + 1) * seq * head_dim];
-            let kh = &kv[h * seq * head_dim..(h + 1) * seq * head_dim];
-            let vh = &vv[h * seq * head_dim..(h + 1) * seq * head_dim];
-
-            // S = Q·Kᵀ (matmul_nt computes X·Wᵀ directly).
-            let qt =
-                Tensor::from_f32(qh, Shape::new([seq, head_dim])).map_err(|e| anyhow!("{e}"))?;
-            let kt =
-                Tensor::from_f32(kh, Shape::new([seq, head_dim])).map_err(|e| anyhow!("{e}"))?;
-            let scores = sapient_backends_cpu::kernels::matmul::matmul_nt(&qt, &kt)
-                .map_err(|e| anyhow!("{e}"))?;
-            let mut sv = scores.to_f32_vec();
-
-            // Row-wise softmax (parallel over query rows).
-            sv.par_chunks_mut(seq).for_each(|row| {
-                let mut mx = f32::NEG_INFINITY;
-                for x in row.iter_mut() {
-                    *x *= scale;
-                    if *x > mx {
-                        mx = *x;
+        .for_each(|(h, out_h)| {
+            let qh = &qv[h * head_len..(h + 1) * head_len];
+            let kh = &kv[h * head_len..(h + 1) * head_len];
+            let vh = &vv[h * head_len..(h + 1) * head_len];
+            out_h
+                .par_chunks_mut(tile * head_dim)
+                .enumerate()
+                .for_each(|(ti, out_t)| {
+                    let r0 = ti * tile;
+                    let rows = out_t.len() / head_dim;
+                    let q_t = &qh[r0 * head_dim..(r0 + rows) * head_dim];
+                    // S = Q_t · Kᵀ  (B[d][j] = K[j][d]).
+                    let mut scores = vec![0.0f32; rows * seq];
+                    sgemm_serial(rows, head_dim, seq, q_t, kh, 1, head_dim, &mut scores);
+                    // Row-wise softmax.
+                    // MEASURED, NOT ADOPTED (2026-10-02): a 4-wide NEON polynomial
+                    // exp (~2e-7 rel. error) cut attention 765 → 546 ms single-thread
+                    // on M4 but is not bit-identical and flipped a greedy near-tie
+                    // in the reply. Kept scalar until a quality gate exists to
+                    // accept that class of change.
+                    for row in scores.chunks_exact_mut(seq) {
+                        let mut mx = f32::NEG_INFINITY;
+                        for x in row.iter_mut() {
+                            *x *= scale;
+                            if *x > mx {
+                                mx = *x;
+                            }
+                        }
+                        let mut sum = 0.0f32;
+                        for x in row.iter_mut() {
+                            *x = (*x - mx).exp();
+                            sum += *x;
+                        }
+                        let inv = 1.0 / sum;
+                        for x in row.iter_mut() {
+                            *x *= inv;
+                        }
                     }
-                }
-                let mut sum = 0.0f32;
-                for x in row.iter_mut() {
-                    *x = (*x - mx).exp();
-                    sum += *x;
-                }
-                let inv = 1.0 / sum;
-                for x in row.iter_mut() {
-                    *x *= inv;
-                }
-            });
-
-            // O = S·V = matmul_nt(S, Vᵀ).
-            let mut vt = vec![0.0f32; head_dim * seq];
-            for si in 0..seq {
-                for d in 0..head_dim {
-                    vt[d * seq + si] = vh[si * head_dim + d];
-                }
-            }
-            let st = Tensor::from_f32(&sv, Shape::new([seq, seq])).map_err(|e| anyhow!("{e}"))?;
-            let vt =
-                Tensor::from_f32(&vt, Shape::new([head_dim, seq])).map_err(|e| anyhow!("{e}"))?;
-            let o = sapient_backends_cpu::kernels::matmul::matmul_nt(&st, &vt)
-                .map_err(|e| anyhow!("{e}"))?;
-            out_h.copy_from_slice(&o.to_f32_vec());
-            Ok(())
-        })?;
+                    // O_t = S · V  (B[s][d] = V[s][d]).
+                    sgemm_serial(rows, seq, head_dim, &scores, vh, head_dim, 1, out_t);
+                });
+        });
     Tensor::from_f32(&out, Shape::new([1, n_heads, seq, head_dim])).map_err(|e| anyhow!("{e}"))
 }
 
@@ -332,6 +386,53 @@ mod tests {
     /// The pixel-shuffle ordering must be exactly transformers'
     /// `Idefics3Connector.pixel_shuffle`: out[hj][wj] = concat over dh (outer),
     /// dw (inner) of in[hj·s+dh][wj·s+dw], channels innermost.
+    /// Tiling the tower attention over query rows must not change a single
+    /// bit, and the result must match a naive reference.
+    #[test]
+    fn tiled_attention_is_bit_identical_and_matches_naive() {
+        use super::{Shape, Tensor};
+        let (heads, seq, hd) = (2usize, 37usize, 8usize);
+        let gen = |salt: usize| -> Vec<f32> {
+            (0..heads * seq * hd)
+                .map(|i| (((i * 2654435761usize + salt * 97) % 2003) as f32 / 2003.0 - 0.5) * 3.0)
+                .collect()
+        };
+        let (qd, kd, vd) = (gen(1), gen(2), gen(3));
+        let t = |d: &[f32]| Tensor::from_f32(d, Shape::new([1, heads, seq, hd])).unwrap();
+        let (q, k, v) = (t(&qd), t(&kd), t(&vd));
+
+        let whole = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, seq)
+            .unwrap()
+            .to_f32_vec();
+        for tile in [1usize, 5, 16, 36] {
+            let tiled = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, tile)
+                .unwrap()
+                .to_f32_vec();
+            for (i, (a, b)) in tiled.iter().zip(&whole).enumerate() {
+                assert_eq!(a.to_bits(), b.to_bits(), "tile {tile}, element {i}");
+            }
+        }
+
+        // Naive reference in f64.
+        let scale = 1.0 / (hd as f64).sqrt();
+        for h in 0..heads {
+            for i in 0..seq {
+                let at = |d: &[f32], r: usize, c: usize| d[(h * seq + r) * hd + c] as f64;
+                let s: Vec<f64> = (0..seq)
+                    .map(|j| (0..hd).map(|d| at(&qd, i, d) * at(&kd, j, d)).sum::<f64>() * scale)
+                    .collect();
+                let mx = s.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let e: Vec<f64> = s.iter().map(|x| (x - mx).exp()).collect();
+                let z: f64 = e.iter().sum();
+                for d in 0..hd {
+                    let want: f64 = (0..seq).map(|j| e[j] / z * at(&vd, j, d)).sum();
+                    let got = whole[(h * seq + i) * hd + d] as f64;
+                    assert!((got - want).abs() < 1e-4, "h{h} i{i} d{d}: {got} vs {want}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn pixel_shuffle_ordering_matches_reference() {
         // 4×4 grid, c=1, s=2 → 2×2 output with 4 channels each.

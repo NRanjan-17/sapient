@@ -83,6 +83,77 @@ llama.cpp and Ollama run it at 8-bit.
 
 ---
 
+## Vision tower — SmolVLM-256M image encode (2026-10-02)
+
+> `sapient see <image> --model smolvlm-256m`, one 512² image (1024 patches,
+> SigLIP-B/16, 12 layers, BF16 weights → online Q8_0, W8A8 SDOT path). Timing is
+> the CLI's `vision` stage; the per-stage split is `SAPIENT_VISION_TIMING=1`.
+> Same image and prompt every run; reply text checked byte-identical before/after.
+
+| Vision encode | before | after | change |
+|---|---:|---:|---:|
+| Apple M4, 10 threads | 1140 ms | **~555 ms** | −51% |
+| Apple M4, 4 threads (`RAYON_NUM_THREADS=4`) | 1410 ms | **~750 ms** | −47% |
+| Raspberry Pi 5 (4× Cortex-A76) | 7.2–7.4 s (v0.5.2 release) | **3.5–3.6 s** (3 runs: 3509–3603 ms) | −51% |
+
+"Before" on the M4 is main at v0.6.0-level kernels (the 3.0 s in the
+vision-language table further down predates the blocked W8A8 GEMM). "Before" on
+the Pi is the installed v0.5.2 release binary; "after" is this branch
+cross-compiled (`--no-default-features`, `target-cpu=cortex-a76`). Pi prefill for
+the 79-token prompt also dropped 0.58 → 0.27 s.
+
+Five changes, all bit-identical (reply text, `vlm_e2e`, `vlm_geometry_probe` and
+three new bit-identity tests all pass):
+
+1. **Parallel element-wise map** (`unary_f32` ≥ 65k elements): the tower's GELU was
+   one single-threaded pass over 3M elements per layer — 255 → 40 ms.
+2. **Head split/merge fast path** (`permute` `[0,2,1,3]`): whole `head_dim` runs
+   copied instead of a per-element recursive walk — q/k/v stage 262 → 141 ms. The
+   LLM engines share this helper, so short-prompt prefill also dropped (110 → ~75 ms
+   for 77 tokens).
+3. **Four-activation-row SDOT tile** (`dot_q8_0_row_sdot_x4`): each Q8_0 weight
+   block is loaded once for four patch rows, the four block dots reduce together
+   and combine with the scales as a vector; weight scales are widened once per
+   weight row.
+4. **Activation panels in the blocked W8A8 GEMM** — the Pi finding. The old loop
+   swept all 1024 patch rows (0.8–3 MB of int8) per weight row. That fits an
+   M-series L2 but not a Cortex-A76's 512 KB, and on the Pi the tower's linears
+   sat on the memory-bandwidth roofline (~2.4 GB of traffic per linear per layer).
+   Processing 32 KB activation panels against each task's weight rows took the Pi
+   from 5.5 → 4.3 s (fc2 1300 → ~560 ms). Panel sweep on the Pi: 8–128 KB within
+   ~2%, 512 KB +7%, no panelling +28% (`SAPIENT_Q8_PANEL_KB` overrides).
+
+5. **Tiled tower attention.** The dense attention built a full `seq × seq` score
+   matrix per head (4 MB at 1024 patches) and streamed it three times. It now
+   works in tiles of query rows — score block, softmax and `S·V` while the block
+   is cache-resident — with (head, tile) pairs in parallel. Pi attention
+   1560 → ~850 ms (tower 4.26 → 3.5 s); M4 160 → ~122 ms. Tile sweep on the Pi
+   (attention ms): 16 KB 3542 · 64 KB 1078 · **256 KB 846** · 1 MB 987 ·
+   untiled 1051 — small tiles lose to SGEMM re-packing K/V per call
+   (`SAPIENT_ATTN_TILE_KB` overrides).
+
+Stage split after (ms):
+
+| | norm | q/k/v | attention | out_proj | fc1 | GELU | fc2 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| M4, 10 threads | 26 | 100 | 122 | 34 | 122 | 40 | 92 |
+| Pi 5 | 69 | ~670 | ~850 | ~230 | **~910** | ~180 | ~530 |
+
+On the Pi the four Q8_0 linears are now ~2.3 s of the 3.5 s.
+
+**Measured, not adopted:** a 4-wide NEON polynomial `exp` for the attention
+softmax (~150M exponentials per image) cut attention 765 → 546 ms single-thread
+but only ~5% of the tower at 10 threads, is not bit-identical, and flipped a
+greedy near-tie in the reply. It stays scalar until a quality gate exists.
+
+**Headroom:** the tower is ~107 G multiply-accumulates per image. Single-thread the
+M4 now runs it at ~40 G/s, a fraction of what `sdot` can do in principle — the
+per-32-block f32 scale combine is the same tail the Q8_K activation format removed
+from the K-quant kernels. That, plus better multi-thread scaling (1 → 10 threads is
+only ~4×), is the next rung.
+
+---
+
 ## v0.5.3 head-to-head refresh (Apple M4, 2026-07-09)
 
 > Hardware: **Apple M4 (MacBook Pro) · 16 GB · macOS 26.5 aarch64.** SAPIENT

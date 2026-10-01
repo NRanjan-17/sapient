@@ -5,6 +5,22 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 👁️ Vision tower ~50% faster (bit-identical)
+
+- SmolVLM image encode: **Apple M4 1140 → ~555 ms** (4 threads: 1410 → ~750 ms);
+  **Raspberry Pi 5 7.3 s (v0.5.2) → 3.5 s**. Five bit-identical changes: the
+  element-wise map (GELU) runs in parallel for large tensors; the head
+  split/merge `permute` copies whole `head_dim` runs (also speeds LLM prefill);
+  the blocked W8A8 GEMM processes four activation rows per weight row
+  (`dot_q8_0_row_sdot_x4`); it now walks cache-sized activation panels (on the
+  Pi the old loop was memory-bandwidth-bound); and the tower attention is tiled
+  over query rows instead of materialising a 4 MB score matrix per head.
+- `SAPIENT_VISION_TIMING=1` prints the tower's per-stage breakdown;
+  `SAPIENT_Q8_PANEL_KB` / `SAPIENT_ATTN_TILE_KB` override the panel / tile
+  sizes for tuning.
+- Fixed: `--no-default-features` builds failed to compile (`server.rs` referenced
+  the optional audio crate directly).
+
 ### 📏 Benchmark tooling and docs — measure what we say we measure
 
 - **`sapient bench-llm` now reports decode-only throughput.** Greedy decode with an
