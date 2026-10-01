@@ -1,0 +1,121 @@
+{
+  "date": "2026-10-02T03:23:37+05:30",
+  "machine": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "perf_threads": 4,
+    "cpu": "Apple M4"
+  },
+  "sapient": {
+    "version": "sapient 0.6.0",
+    "git": "de4e125",
+    "dirty": true,
+    "binary_bytes": 52416848,
+    "backend": "cpu"
+  },
+  "llm": {
+    "openhorizon/qwen2.5-1.5b-q4": {
+      "sapient": {
+        "decode_tps_mean": 53.6,
+        "decode_tps_runs": [
+          54.1,
+          53.7,
+          53.0
+        ],
+        "decode_tps_stdev": 0.45,
+        "ttft_ms_runs": [
+          360,
+          364,
+          362
+        ],
+        "ttft_ms_mean": 362,
+        "peak_rss_mb": 1177,
+        "tokens_per_run": [
+          128,
+          128,
+          128
+        ],
+        "threads": 10,
+        "load_time_ms": 526,
+        "method": "greedy; tps = decode-only (tokens \u2212 1) / (t_last_token \u2212 t_first_token); ttft_ms = prompt prefill + first token; warm-up runs excluded from means; peak_rss_mb = getrusage ru_maxrss (process high-water mark)"
+      },
+      "llama_cpp": {
+        "decode_tps_mean": 62.59,
+        "decode_tps_stdev": 1.12,
+        "threads": 4,
+        "gguf": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "build": "0.5.0 (build 11146, commit 7fe450e19)"
+      },
+      "llama_cpp_over_sapient": 1.168
+    },
+    "openhorizon/llama-3.2-1b-q4": {
+      "sapient": {
+        "decode_tps_mean": 66.5,
+        "decode_tps_runs": [
+          65.6,
+          65.1,
+          68.8
+        ],
+        "decode_tps_stdev": 1.64,
+        "ttft_ms_runs": [
+          293,
+          522,
+          321
+        ],
+        "ttft_ms_mean": 378,
+        "peak_rss_mb": 1184,
+        "tokens_per_run": [
+          128,
+          128,
+          128
+        ],
+        "threads": 10,
+        "load_time_ms": 663,
+        "method": "greedy; tps = decode-only (tokens \u2212 1) / (t_last_token \u2212 t_first_token); ttft_ms = prompt prefill + first token; warm-up runs excluded from means; peak_rss_mb = getrusage ru_maxrss (process high-water mark)"
+      },
+      "llama_cpp": {
+        "decode_tps_mean": 75.44,
+        "decode_tps_stdev": 1.08,
+        "threads": 4,
+        "gguf": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        "build": "0.5.0 (build 11146, commit 7fe450e19)"
+      },
+      "llama_cpp_over_sapient": 1.134
+    }
+  },
+  "vision": {
+    "model": "smolvlm-256m",
+    "runs": 10,
+    "encode_ms_runs": [
+      617,
+      567,
+      614,
+      641,
+      611,
+      571,
+      556,
+      659,
+      598,
+      601
+    ],
+    "encode_ms_p50": 606.0,
+    "encode_ms_max": 659,
+    "encode_ms_min": 556,
+    "encode_ms_stdev": 30.8,
+    "prefill_ms_p50": 76.0,
+    "stage_ms_p50": {
+      "norm": 27.0,
+      "qkv": 112.0,
+      "attn": 128.0,
+      "out_proj": 38.5,
+      "fc1": 132.0,
+      "gelu": 43.5,
+      "fc2": 99.5
+    }
+  },
+  "notes": [
+    "Second of two back-to-back runs. The first (same binary, minutes earlier) read llama-1b 71.2 tok/s, qwen-1.5b within 5%, vision p50 556 ms \u2014 run-to-run spread on this laptop is up to ~8%, so merge decisions use interleaved A/B runs, not a single file-to-file diff.",
+    "sapient.dirty=true: built from loop/001-baseline with only the registry gated-flag change (no kernel change vs main de4e125)."
+  ]
+}
