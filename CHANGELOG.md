@@ -3,6 +3,28 @@
 Release notes for SAPIENT. The release workflow publishes each version's
 section below as the GitHub release body.
 
+## [Unreleased]
+
+### 📏 Benchmark tooling and docs — measure what we say we measure
+
+- **`sapient bench-llm` now reports decode-only throughput.** Greedy decode with an
+  exact token count, `(tokens − 1) / (t_last − t_first)`; previously it divided the
+  re-tokenized reply length by total time *including* TTFT and averaged every run.
+  New `--warmup N` (default 1) runs are excluded from the means and listed
+  separately in the JSON; "peak RSS" is now the real high-water mark (`getrusage`)
+  instead of end-of-run RSS; local `.gguf` paths work as the help text always
+  claimed. JSON keeps its existing keys and adds `method`, `warmup`, `threads`,
+  `sapient_version`, per-run `e2e_tps`/`hit_eos`, and `summary.decode_tps`.
+- **`scripts/gen-benchmark-report.py` no longer substitutes placeholder numbers**
+  when an input file is missing — it exits with an error.
+- **Docs:** `docs/BENCHMARKS.md` gains a method section (old-vs-new tool, thread
+  asymmetry, Metal 4-bit re-quantization, no quality eval yet) and an independent
+  v0.6.0 M4 reproduction with raw output committed under
+  `docs/assets/bench_2026-10-01/`. Stale sections are dated and marked historical;
+  the "22 MB binary", "beats the M4 CPU" (wgpu), "1.5× Ollama" and Pi 11.6 tok/s
+  figures are corrected or caveated across README, PROJECT_GUIDE, PI, ROADMAP and
+  SERVING_BENCHMARKS. The dead Homebrew tap line is removed from the README.
+
 ## [0.6.0] - 2026-07-14
 
 **SAPIENT becomes an agent backend, and goes mobile.**

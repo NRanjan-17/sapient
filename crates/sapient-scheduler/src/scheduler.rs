@@ -60,7 +60,7 @@ impl BatchScheduler for StaticBatchScheduler {
         if self.queue.is_empty() {
             None
         } else {
-            let batch = self.queue.drain(..).collect();
+            let batch = std::mem::take(&mut self.queue);
             Some(Batch::new(batch))
         }
     }
@@ -130,7 +130,7 @@ impl BatchScheduler for DynamicBatchScheduler {
             None
         } else {
             self.window_start = None;
-            let batch = self.queue.drain(..).collect();
+            let batch = std::mem::take(&mut self.queue);
             Some(Batch::new(batch))
         }
     }

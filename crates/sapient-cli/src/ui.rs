@@ -382,7 +382,7 @@ pub fn print_bench_table(
     );
     println!();
 
-    let headers = &["Run", "TTFT", "Tok/s", "Tokens"];
+    let headers = &["Run", "TTFT", "Decode tok/s", "Tokens"];
     let rows: Vec<Vec<String>> = runs
         .iter()
         .map(|r| {
@@ -405,7 +405,7 @@ pub fn print_bench_table(
             style("Mean TTFT:").dim(),
             style(mean_ttft).bold().cyan(),
             style("|").dim(),
-            style("Mean tok/s:").dim(),
+            style("Mean decode tok/s:").dim(),
             style(format!("{mean_tps:.1}")).bold().cyan(),
             style("|").dim(),
             style("Peak RSS:").dim(),
