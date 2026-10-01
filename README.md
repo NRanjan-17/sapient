@@ -15,6 +15,43 @@
 
 ---
 
+## What it is
+
+SAPIENT runs language, speech, and vision models on your own hardware from **one
+binary** — no Python, no Docker, no daemon, no CUDA.
+
+- **Chat** — Llama, Qwen, Phi, Gemma 3, Mistral and sparse-MoE models, from GGUF or safetensors.
+- **Speech** — Whisper speech-to-text, real-time Kokoro text-to-speech, and a streaming voice loop (`sapient converse`).
+- **Vision** — ask questions about an image (SmolVLM, Gemma 3, MedGemma).
+- **Serve** — an OpenAI-compatible HTTP server with tool calling, image, and audio endpoints.
+- **Embed** — Swift, Kotlin, and React Native SDKs run the same engine inside your app, on the GPU when one is available, with a thermal governor.
+
+It runs on a Raspberry Pi 5, a laptop, or a Jetson: CPU everywhere, Metal on Apple
+Silicon, and wgpu (Vulkan / DX12) on Intel, AMD, and Nvidia GPUs.
+
+**What it is not:** the fastest decoder. llama.cpp is ahead on raw tokens per second
+(numbers in [Performance](#performance)). SAPIENT's case is breadth in one small,
+dependency-light binary.
+
+## Quick start
+
+```bash
+curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/install.sh | sh
+
+sapient chat qwen2.5-0.5b-q4                        # chat (downloads the model on first run)
+sapient transcribe whisper-base recording.wav       # speech → text
+sapient speak kokoro-82m "Hello from my own CPU."   # text → speech
+sapient see photo.jpg -p "What's in this picture?"  # vision
+sapient serve                                       # OpenAI-compatible API on :11435
+```
+
+**Contents:** [Install](#install) · [CLI](#cli) · [HTTP server](#http-server--openai-compatible) ·
+[SDKs](#sdks--swift--kotlin--typescript-mobile--embedding) · [Models](#supported-models) ·
+[Performance](#performance) · [Rust API](#rust-api) · [Architecture](#architecture) ·
+[Build](#build-from-source) · [License](#license)
+
+---
+
 ## Install
 
 ### macOS & Linux (one command)
@@ -39,7 +76,8 @@ irm https://github.com/SkidGod4444/sapient/releases/latest/download/install.ps1 
 > `sapient update` will ask which build you want whenever your machine has a GPU
 > (or pass `--gpu` / `--cpu` / `--metal`).
 
-### Direct Download
+<details>
+<summary><b>Direct download</b> — pre-built binaries per platform</summary>
 
 Grab a pre-built binary for your platform from the [**latest release**](https://github.com/SkidGod4444/sapient/releases/latest):
 
@@ -59,178 +97,200 @@ Grab a pre-built binary for your platform from the [**latest release**](https://
 >
 > **`-gpu` binaries** add the cross-platform wgpu GPU backend (`--backend wgpu`); use them on any Intel/AMD/Nvidia GPU. On Linux they need the Vulkan loader (`libvulkan1`) and your GPU driver installed. The plain binaries are CPU-only. On Apple Silicon use the `-metal` binary instead.
 
+</details>
 
 ---
 
-## CLI — 30 Seconds to Running a Model
+## CLI
+
+Run `sapient models` to see every supported model, and `sapient <command> --help` for
+all flags.
+
+**Chat**
 
 ```bash
-# See every model SAPIENT supports (the registry catalog)
-sapient models
+sapient chat openhorizon/phi-2                               # interactive; replies render as live Markdown
+sapient chat openhorizon/phi-2 --raw                         # plain text (automatic when piped)
+sapient chat openhorizon/qwen2.5-0.5b --backend auto         # auto | cpu | metal | wgpu
+sapient chat openhorizon/qwen2.5-0.5b -p "Tell me a joke"    # one-shot: reply on stdout, scriptable
+sapient chat openhorizon/phi-4-mini -n 4096 -p "…"           # --max-tokens (default 2048; capped replies print a notice)
+sapient chat openhorizon/qwen2.5-1.5b --speculative          # speculative decoding with a draft model
+sapient run openhorizon/phi-2 --prompt "Explain transformers" # raw completion (no chat template)
+```
 
-# Interactive chat — streaming replies, modern UI, paste-safe line editing
-# Replies render as formatted Markdown live (headings, lists, **bold**, syntax-
-# highlighted code blocks). Use --raw for plain text; auto-disabled when piped.
-sapient chat openhorizon/phi-2
-sapient chat openhorizon/phi-2 --raw                    # plain Markdown text
-sapient chat openhorizon/qwen2.5-0.5b --backend auto   # auto | cpu | metal | wgpu
-sapient chat openhorizon/qwen2.5-0.5b -p "Tell me a joke"  # one-shot: single turn, reply to stdout (scriptable)
-sapient chat openhorizon/phi-4-mini -n 4096 -p "…"     # --max-tokens: per-reply cap (default 2048; capped replies print a notice)
+Inside chat: `/help` for commands, `/clear` to reset the conversation, `/exit` to quit.
 
-# Speculative decoding (faster generation with a draft model)
-sapient chat openhorizon/qwen2.5-1.5b --speculative
-sapient chat openhorizon/qwen2.5-1.5b --speculative --draft-model openhorizon/qwen2.5-0.5b
+**Speech**
 
-# One-shot completion (Hub models need --prompt)
-sapient run openhorizon/phi-2 --prompt "Explain transformers in simple terms"
-
-# Speech-to-text — transcribe audio with Whisper (WAV/FLAC/MP3/OGG/M4A)
+```bash
+# Speech-to-text — Whisper (WAV/FLAC/MP3/OGG/M4A)
 sapient transcribe whisper-base recording.wav             # streams text as it decodes
-sapient transcribe whisper-small talk.mp3 --language en   # skip auto-detect
+sapient transcribe whisper-small talk.mp3 --language en   # skip language auto-detect
 sapient transcribe whisper-tiny clip.flac --translate     # → English
-sapient transcribe whisper-base long.wav --timestamps     # long-audio re-seek
+sapient transcribe whisper-base long.wav --timestamps     # long audio, with timestamps
 sapient transcribe whisper-base clip.wav --beam-size 5    # beam search
 
-# Text-to-speech — Kokoro-82M (~2× real-time on CPU: RTF 0.48 on M4; StyleTTS2 + ISTFTNet)
-# Speaks aloud through the default output device AND writes the WAV. Add --no-play to only write.
-sapient speak kokoro-82m "Hello, this is sapient speaking."             # plays + writes speech.wav
+# Text-to-speech — Kokoro-82M (about 2× real-time on an M4 CPU; 54 voices)
+sapient speak kokoro-82m "Hello, this is sapient speaking."              # plays + writes speech.wav
 sapient speak kokoro-82m "The quick brown fox." --voice af_bella -o fox.wav
-sapient speak kokoro-82m "Save it, don't play it." --no-play -o out.wav  # write only
-#   54 voices (af_heart, af_bella, am_michael, bf_emma, …); pure-Rust G2P, no espeak
+sapient speak kokoro-82m "Save it, don't play it." --no-play -o out.wav
 
-# Text-to-speech — Orpheus-3B (Llama-3.2 → SNAC codec; richer voice, slow on CPU)
+# Text-to-speech — Orpheus-3B (richer voice, slow on CPU; voices: tara leah jess leo dan mia zac zoe)
 sapient speak orpheus-3b "The quick brown fox." --voice leo -o fox.wav
-#   voices: tara | leah | jess | leo | dan | mia | zac | zoe
-
-# Vision — ask questions about an image, fully on-device
-sapient see photo.jpg -p "What's in this picture?"          # SmolVLM-256M (default)
-sapient see chart.png -p "Summarize this chart." --model gemma-3-4b
-sapient see xray.png -p "Describe findings." --model medgemma-4b   # medical (gated: sapient login)
-
-# Voice conversation — a STREAMING loop: speech is transcribed while you're
-# still talking, the reply starts speaking after its first clause, and you can
-# interrupt it mid-sentence (barge-in). About 2 s from end of speech to first reply
-# audio on an M4 CPU (measured 2026-07); per-turn latency breakdown printed live.
-# (Live mic; Linux needs libasound2-dev; macOS prompts for mic permission.)
-sapient converse qwen2.5-1.5b --stt whisper-base
-sapient converse qwen2.5-1.5b --speak   # speak replies aloud (Kokoro-82M)
-
-# Live resource monitor — CPU cores, RAM, and disk used by SAPIENT
-sapient stats        # (aliases: top, monitor) — Ctrl-C to exit
-
-# Download a model to local cache
-sapient pull openhorizon/phi-2
-
-# List / remove downloaded models
-sapient list
-sapient rm openhorizon/phi-2   # remove one model
-sapient reset                  # clear entire cache
-
-# OpenAI-compatible HTTP server (lazy model load on first request)
-sapient serve                    # listens on 127.0.0.1:11435 (--port to change)
-sapient serve --speculative
-
-# Update sapient to the latest release
-# (v0.5.x and older cannot self-update — re-run the install script once)
-sapient update
-
-# Gated models (medgemma-4b, llama-3.2-3b, mistral-7b) — set a Hugging Face token first
-sapient login
-
-# Show config/architecture info for a model
-sapient info openhorizon/phi-2
-
-# Detect CPU/GPU, get a backend recommendation (tok/s shown is a rough estimate)
-sapient devices
-sapient backend-info
-
-# Verbose mode — show internal logs, file paths, and generation stats
-sapient -v chat openhorizon/phi-2
 ```
 
-Inside chat: type your message and press Enter. Use `/help` for commands, `/clear` to
-reset the conversation, and `/exit` to quit.
-
----
-
-## Fast Downloads
-
-Sapient uses parallel HTTP range requests and concurrent shard downloads (via the Rust `hf-hub` client). Fast downloads are **on by default**.
-
-| Variable | Default | Description |
-|---|---|---|
-| `SAPIENT_HUB_MAX_PARALLEL` | `min(CPU cores, 8)` | Concurrent download workers |
-| `SAPIENT_HUB_CHUNK_SIZE` | `10000000` (10 MiB) | HTTP range chunk size |
-| `SAPIENT_FAST_DOWNLOAD` | `1` | Set to `0` to disable parallel mode |
+**Vision**
 
 ```bash
-# Example: limit workers on a slow connection
-SAPIENT_HUB_MAX_PARALLEL=2 sapient pull <model>
+sapient see photo.jpg -p "What's in this picture?"                   # SmolVLM-256M (default)
+sapient see chart.png -p "Summarize this chart." --model gemma-3-4b
+sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (gated: sapient login)
 ```
 
-> **Note:** Python-only accelerators like `hf_xet` are not available in the Rust CLI. Sapient achieves similar gains through parallel range requests and concurrent multi-shard downloads.
+**Voice conversation**
+
+A streaming loop: speech is transcribed while you are still talking, the reply starts
+speaking after its first clause, and you can interrupt it mid-sentence. About 2 s from
+end of speech to first reply audio on an M4 CPU (measured 2026-07). Needs a microphone;
+macOS prompts for permission, Linux builds need `libasound2-dev`.
+
+```bash
+sapient converse qwen2.5-1.5b --stt whisper-base
+sapient converse qwen2.5-1.5b --speak        # speak replies aloud (Kokoro-82M)
+```
+
+**Server**
+
+```bash
+sapient serve                    # OpenAI-compatible API on 127.0.0.1:11435 (--port to change)
+sapient serve --speculative
+```
+
+**Models and maintenance**
+
+```bash
+sapient models                   # everything SAPIENT supports
+sapient pull openhorizon/phi-2   # download to the local cache
+sapient list                     # what is downloaded
+sapient rm openhorizon/phi-2     # remove one model
+sapient reset                    # clear the whole cache
+sapient info openhorizon/phi-2   # architecture and config
+sapient login                    # Hugging Face token for gated models
+sapient update                   # latest release (v0.5.x and older: re-run the install script once)
+sapient devices                  # detect CPU/GPU, recommend a backend (tok/s shown is a rough estimate)
+sapient stats                    # live CPU / RAM / disk monitor (aliases: top, monitor)
+sapient -v chat openhorizon/phi-2   # verbose: internal logs, file paths, generation stats
+```
 
 ---
 
-## Rust API
+## HTTP Server — OpenAI-compatible
 
-SAPIENT is **not published to crates.io** — depend on it via git:
+`sapient serve` starts an **OpenAI-compatible HTTP server** backed by the native chat
+pipeline. No model is loaded at startup — the first API request triggers model download
+and load automatically (Ollama-style lazy loading).
 
-```toml
-[dependencies]
-sapient-generate = { git = "https://github.com/SkidGod4444/sapient" }
-tokio = { version = "1", features = ["full"] }
+```bash
+# Start the server (lazy model load on first request; default port 11435)
+sapient serve
+
+# With speculative decoding enabled, on another port
+sapient serve --port 8080 --speculative
 ```
 
-```rust
-use sapient_generate::Pipeline;
+| Endpoint | Purpose |
+|---|---|
+| `GET /v1/models` | List loaded model(s) |
+| `POST /v1/chat/completions` | OpenAI-compatible chat — plain text, **image parts** (base64 data URIs), and **tool calling** |
+| `POST /v1/completions` | Raw text completion |
+| `POST /v1/audio/transcriptions` | OpenAI-compatible speech-to-text (multipart audio upload) |
+| `POST /v1/audio/speech` | OpenAI-compatible text-to-speech → WAV (Kokoro, 54 voices) |
+| `GET /v1/health` | Liveness check |
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // Downloads, caches, and runs — zero config needed
-    let p = Pipeline::from_pretrained("openhorizon/phi-2").await?;
-    println!("{}", p.generate("The key to good software is").await?);
-    Ok(())
-}
+`/v1/chat/completions` accepts OpenAI-style image content parts as **base64 data URIs**,
+routed through the same vision engine as `sapient see` (smolvlm-256m, gemma-3-4b,
+medgemma-4b). Remote image URLs are refused by design — your inference box never makes
+surprise egress. The server keeps the N most-recently-used models resident (multi-model
+LRU cache, `--max-models` / `--cache-gb`), so switching back to a recent model is
+instant instead of a cold reload.
+
+Example with `curl`:
+
+```bash
+curl http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openhorizon/qwen2.5-0.5b-q4",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
 ```
 
-### Chat (Instruct Models)
+The server is compatible with any OpenAI-client SDK or tool (LangChain, LlamaIndex, etc.)
+by pointing the base URL at `http://localhost:11435/v1`.
 
-```rust
-use sapient_tokenizers::ChatMessage;
+### Tool calling — a local backend for agents
 
-let p = Pipeline::from_pretrained("openhorizon/phi-2").await?;
-let reply = p.chat(&[
-    ChatMessage::system("You are a helpful coding assistant."),
-    ChatMessage::user("Write a Rust function to reverse a string."),
-]).await?;
-println!("{reply}");
+`/v1/chat/completions` speaks OpenAI **`tools`** / **`tool_choice`**, so an agent framework
+can drive SAPIENT unmodified. Point the Vercel AI SDK, LangChain, or the OpenAI SDK at
+`localhost` and your agent loop runs entirely on-device.
+
+Use a **tool-trained** model — every `qwen2.5-*` alias resolves to Qwen2.5-Instruct, which is:
+
+```bash
+curl http://localhost:11435/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2.5-3b",
+    "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get the weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {"city": {"type": "string"}},
+          "required": ["city"]
+        }
+      }
+    }]
+  }'
 ```
 
-### Streaming
-
-```rust
-use futures::StreamExt;
-
-let mut stream = p.generate_stream("Once upon a time").await;
-while let Some(token) = stream.next().await {
-    print!("{token}");
-}
+```json
+{"choices": [{
+  "message": {"role": "assistant", "content": null, "tool_calls": [
+    {"id": "call_…", "type": "function",
+     "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}
+  ]},
+  "finish_reason": "tool_calls"
+}]}
 ```
 
-### Custom Sampling
+Send the result back as a `{"role": "tool", "tool_call_id": …, "content": …}` message and the
+model continues. That is the whole loop; SDKs do it for you.
 
-```rust
-use sapient_generate::{GenerationConfig, SamplingStrategy};
+**`tool_choice` is binding, not advisory.** `"auto"` lets the model decide, `"none"` suppresses
+the tools entirely, and **`"required"`** — or a named function, `{"type":"function","function":
+{"name":"look"}}` — *forces* a call. This matters when an answer must not come from imagination:
+a small model asked "what do you see?" will otherwise happily describe a scene it never looked
+at. Under `required` it calls the tool instead.
 
-let cfg = GenerationConfig {
-    max_new_tokens: 200,
-    strategy: SamplingStrategy::TopP { p: 0.95, temperature: 0.8 },
-    stop_sequences: vec!["<|end|>".into()],
-    ..Default::default()
-};
-let text = p.generate_with_config("Write a haiku about Rust", &cfg).await?;
+> **Model size is a correctness knob here.** Tool-calling quality falls off sharply below ~3B.
+> Qwen2.5-1.5B will answer perception questions from imagination under `tool_choice: "auto"`;
+> 3B calls the tool. Prefer 3B+ for agent work, or force the call.
+
+### Text-to-speech
+
+```bash
+curl http://localhost:11435/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model": "kokoro-82m", "input": "Hello from your own silicon.", "voice": "af_heart"}' \
+  --output hello.wav
 ```
+
+Returns a 16-bit PCM WAV. `response_format` accepts `wav` or `pcm` — SAPIENT has no MP3 encoder,
+and rejects other formats loudly rather than mislabelling WAV bytes as `audio/mpeg`.
 
 ---
 
@@ -410,56 +470,76 @@ implementing and validating its architecture in `sapient-models`.
 
 ---
 
-## Performance (Apple M4 16 GB · Raspberry Pi 5 · Jetson AGX Thor)
+## Performance
 
-**Head-to-head vs llama.cpp and Ollama** (same GGUF file, same machine, same
-session — measured on the **v0.5.3** binaries, 2026-07-09; the Qwen rows were
-independently re-measured on v0.6.0 on 2026-10-01 and the ratios held. Method,
-caveats and full tables in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)):
+Dated measurements only. Method, raw output, and every caveat live in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-| Apple M4 (Metal/GPU), decode tok/s | SAPIENT `-metal` | llama.cpp (Metal) | Ollama |
-|---|---|---|---|
-| Llama-3.2-1B Q4_K_M | 90.6 | **111.3** | 60.4† |
-| Qwen2.5-1.5B Q4_K_M | 82.2 | **88.4** | 86.3 |
+**The short version.** On an Apple M4 the Metal build decodes within 10–20% of
+llama.cpp-Metal and level with Ollama at the same quant. The CPU engine is about
+1.3–1.65× behind llama.cpp on the M4 and Pi 5, and about 2.6× behind on server-class
+ARM (Jetson Thor). Warm time-to-first-token on Metal is 52–63 ms.
 
-† Ollama's default `llama3.2:1b` tag ships Q8_0, not Q4_K_M, so that cell is not a
-same-quant comparison. On the same-quant Qwen row SAPIENT and Ollama are level.
+### Chat decode (tokens per second, higher is better)
 
-**Precision caveat:** the `-metal` build re-quantizes every weight to MLX 4-bit
-(group 64) at load, whatever the GGUF's quant — so the Metal column reads the same
-*file* as llama.cpp but does not run the same *precision* (a Q4_K_M file keeps
-roughly a third of its weights at Q6_K in llama.cpp). The CPU path runs the file's
-own blocks.
+| Machine, backend | Model (Q4_K_M GGUF) | SAPIENT | llama.cpp | Ollama |
+|---|---|---:|---:|---:|
+| Apple M4, Metal | Llama-3.2-1B | 90.6 | **111.3** | 60.4† |
+| Apple M4, Metal | Qwen2.5-1.5B | 82.2 | **88.4** | 86.3 |
+| Apple M4, CPU | Llama-3.2-1B | 56.7 | **83.1** | — |
+| Apple M4, CPU | Qwen2.5-1.5B | 40.6 | **66.5** | — |
+| Raspberry Pi 5, CPU | Llama-3.2-1B | 11.5‡ | **14.7**‡ | — |
 
-SAPIENT-Metal sits **within 10–20% of llama.cpp-Metal**, with a warm TTFT of
-52–63 ms (Ollama's ~130–150 ms figure is a `total − eval` proxy, not a streamed
-first token) — from a single daemon-free binary (v0.6.0: ~50 MB CPU build; the
-`-metal` build is ~60 MB plus an 88 MB `mlx.metallib`). The
-**`MlxForwardEngine`** runs the whole forward pass as one MLX lazy graph: every
-activation stays on the GPU, one `eval()` per token.
+Same GGUF files, same machine, same session, v0.5.3 binaries (2026-07-09). The Qwen
+rows were re-measured independently on v0.6.0 (2026-10-01) and the ratios held.
 
-**The CPU engine is within ~1.3–1.65× of llama.cpp** (was 1.8–3.8× at v0.5.0) after
-the v0.5.1 kernel ladder — multi-row GEMV, `Q4_K_R4` load-time weight repacking,
-W6A8 SDOT Q6_K, and i8mm SMMLA prefill kernels, every rung bit-identity-gated:
+<details>
+<summary><b>Read before quoting these numbers</b></summary>
 
-| CPU decode, tok/s | SAPIENT (all cores) | llama.cpp (4 threads on M4) |
-|---|---|---|
-| Apple M4 — Llama-3.2-1B Q4_K_M | 56.7 | **83.1** |
-| Apple M4 — Qwen2.5-1.5B Q4_K_M | 40.6 | **66.5** |
-| Raspberry Pi 5 (16 GB) — Llama-3.2-1B Q4_K_M | 11.5‡ | **14.7**‡ |
+- **† Not same-quant.** Ollama's default `llama3.2:1b` tag ships Q8_0, not Q4_K_M. On
+  the same-quant Qwen row SAPIENT and Ollama are level.
+- **Metal precision.** The `-metal` build re-quantizes every weight to MLX 4-bit
+  (group 64) at load, whatever the GGUF's quant — so the Metal rows read the same
+  *file* as llama.cpp but do not run the same *precision* (a Q4_K_M file keeps roughly
+  a third of its weights at Q6_K in llama.cpp). The CPU path runs the file's own blocks.
+- **Threads.** On the M4 CPU, SAPIENT uses all cores and llama.cpp uses 4 threads —
+  each engine's best setting (llama.cpp is ~3× slower at 10 threads than at 4 because
+  of the efficiency cores).
+- **‡ Different sessions.** The Pi figures are SAPIENT from the v0.5.1 run and
+  llama.cpp from the v0.5.0 session (an older llama.cpp build). Treat the Pi ratio as
+  approximate until the two are re-measured together.
+- **TTFT.** Ollama's ~130–150 ms figure is a `total − eval` proxy, not a streamed
+  first token, so the TTFT ranking is indicative.
+- **Quality.** No perplexity or eval-suite comparison has been run yet.
+- **Binary size.** v0.6.0 ships a ~50 MB CPU build; the `-metal` build is ~60 MB plus
+  an 88 MB `mlx.metallib`.
 
-‡ Different sessions: SAPIENT from the v0.5.1 run, llama.cpp from the v0.5.0 session
-(an older llama.cpp build). Treat the Pi ratio as approximate until re-measured together.
-Each engine runs its best thread setting on the M4 (llama.cpp is ~3× slower at 10 threads
-than at 4 because of the efficiency cores).
+</details>
 
-A Pi 5 went **1.3 → 11.5 tok/s (8.8×)** on this model across v0.5.0 + v0.5.1 — 1B-class
-chat on a Pi is genuinely interactive. CPU prefill is 1.5× (M4) to 2× (Jetson Thor)
-faster than v0.5.0 on long prompts. (These ratios hold on NEON-class CPUs — M-series,
-Pi. SVE-class server ARM (Grace/Thor Neoverse) still trails llama.cpp's KleidiAI
-microkernels ~2.6× on dense decode; closing that is its own roadmap project.)
+A Pi 5 went **1.3 → 11.5 tok/s** on Llama-3.2-1B across v0.5.0 and v0.5.1, so 1B-class
+chat on a Pi is interactive. CPU prefill is 1.5× (M4) to 2× (Jetson Thor) faster than
+v0.5.0 on long prompts.
 
-### Sparse MoE — big models on small devices (v0.5.3)
+![Decode throughput](docs/assets/decode_throughput.png)
+![Time to first token](docs/assets/ttft.png)
+
+### Vision (time to encode one image, lower is better)
+
+| SmolVLM-256M, one 512² image | Before | With the 2026-10 kernels |
+|---|---:|---:|
+| Raspberry Pi 5 | 7.3 s (v0.5.2 release) | **3.5 s** |
+| Apple M4 | 1140 ms (v0.6.0-level) | **~555 ms** |
+
+Five kernel changes, output bit-identical; merged after v0.6.0, so not yet in a
+release binary. MedGemma-4B on an M4 CPU (2026-07, before these kernels): 33 s vision
+tower, then 15 tok/s decode.
+
+### Speech
+
+Kokoro-82M synthesizes at about 2× real-time on an M4 CPU (RTF 0.48). Orpheus-3B is not
+real-time even on Metal.
+
+### Sparse MoE — large models on a Jetson (v0.5.3)
 
 A **47B Mixtral-8x7B** and a **106B GLM-4.5-Air** run fully on-device on a Jetson AGX
 Thor's CPU (14× Neoverse) — no CUDA or JetPack involved:
@@ -469,206 +549,128 @@ Thor's CPU (14× Neoverse) — no CUDA or JetPack involved:
 | Mixtral-8x7B (47B-A13B, ≈ 26 GB) | 5.5 tok/s | ~6–9 tok/s | 25.6 GB (mmap ≈ file size) |
 | GLM-4.5-Air (106B-A12B, ≈ 63 GB split GGUF) | 3.2 tok/s | 3.9 tok/s | 72 GB — fits a 96 GB device |
 
-**Quality check:** on the one prompt tested, greedy output is token-identical to
-llama.cpp on the same file for ~28 tokens, then diverges on a near-tie (no perplexity
-or eval-suite comparison has been run yet; the Mixtral comparison used llama.cpp
-`b1928`, the last build that loads this file layout) — and SAPIENT loads the classic per-expert
-Mixtral GGUFs that current llama.cpp rejects. MoE models mmap by default (RSS ≈ file
-size), and quant types SAPIENT can't keep as packed blocks (e.g. Q5_0 in "dynamic"
-quants) re-quantize to Q8_0 at load instead of exploding to F32 (GLM peak RSS
-118 → 72 GB). Full decomposition in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+llama.cpp decodes Mixtral about 1.8× faster on the same file (9.95 vs 5.5 tok/s).
+On the one prompt tested, greedy output is token-identical to llama.cpp for ~28 tokens,
+then diverges on a near-tie; that comparison used llama.cpp `b1928`, the last build
+that loads this file layout. SAPIENT loads both the classic per-expert Mixtral GGUFs
+and the newer stacked layout. MoE models mmap by default (RSS ≈ file size), and quant
+types SAPIENT can't keep as packed blocks (for example Q5_0 in "dynamic" quants)
+re-quantize to Q8_0 at load instead of expanding to F32 (GLM peak RSS 118 → 72 GB).
 
-**Serving head-to-head** (`sapient serve` vs Ollama vs vLLM, Apple M4 / Metal —
-measured 2026-05-31 on v0.3.5, small samples; see the method caveats in the linked
-page): SAPIENT beats Ollama on TTFT (**4.2×**, 14 ms vs 59 ms), decode (**1.25×**), concurrent
-throughput (**1.31×**, 1.9× lower p95), and model switch-back (**6×**). vLLM is a
-datacenter-GPU engine and doesn't run on this edge box. Charts + method:
-**[docs/SERVING_BENCHMARKS.md](docs/SERVING_BENCHMARKS.md)**.
+### Serving
 
-![Decode throughput](docs/assets/decode_throughput.png)
-![Time to first token](docs/assets/ttft.png)
-
-Key improvements:
-- **`MlxForwardEngine`** — all activations stay as `mlx_rs::Array`; one `eval()` per
-  decode step; MLX fused SDPA for attention. Auto-selected for Llama/Qwen GGUF models on `--backend metal`.
-- **`WgpuForwardEngine`** — cross-platform GPU (Vulkan/DX12/Metal) for Intel/AMD/Nvidia/Apple;
-  GPU-resident weights + KV cache, on-device decode. `--backend wgpu` (build `--features wgpu`).
-- **Engine reuse** — the pipeline holds the loaded engine in an `Arc<Mutex<…>>`; the
-  streaming path no longer rebuilds it per call (TTFT dropped 30–44×, 1.5B: 3 s → 70 ms).
-- **Flash-Edge attention** (CPU) — online-softmax, O(head_dim) memory, NEON `vfmaq_f32`.
-- **Q8_0 KV cache** — 4× RAM reduction vs F32; zero per-step heap allocation.
-- **Online quantization** — F16/BF16 safetensors weights auto-quantized to Q8_0 at load.
-- **NEON int8 kernel ladder (v0.5.1)** — every K-quant matmul runs int8 `sdot`/`smmla`:
-  `Q4_K_R4` load-time row-interleaved repacking (one contiguous weight stream per task),
-  W4A8/W6A8 SDOT dot products, and i8mm SMMLA prefill kernels (two prompt tokens per
-  weight pass on ARMv8.6 cores). Each kernel bit-identity-gated against a scalar oracle.
-- **`sapient devices`** — detect CPU/GPU, recommend a backend, and print a rough bandwidth-based tok/s estimate (not calibrated against the measured tables) before loading a model.
+`sapient serve` vs Ollama on an Apple M4 / Metal, measured once on v0.3.5 (2026-05-31)
+with small samples — indicative only: TTFT 14 ms vs 59 ms, decode 1.25×, 4-way
+concurrent throughput 1.31×. Method and its limits:
+[docs/SERVING_BENCHMARKS.md](docs/SERVING_BENCHMARKS.md).
 
 ### Cross-platform GPU (Intel / AMD / Nvidia)
 
-Metal acceleration is Apple-only. To reach Intel Arc, AMD Radeon, and Nvidia GPUs on
-Linux and Windows, SAPIENT has a portable GPU backend (`crates/sapient-backends/wgpu`)
-built on [`wgpu`](https://wgpu.rs) — the **same WGSL compute shaders** run on Vulkan,
-DX12, and Metal. The full forward pass (`WgpuForwardEngine`) is wired in: weights are
-uploaded to the GPU once, the KV cache lives on-device, and each decode step runs
-entirely on the GPU (RMSNorm, GEMV, RoPE, causal GQA FlashDecoding attention, SwiGLU)
-with only the logits read back. Logits are validated to match the CPU engine.
+The `-gpu` builds use a portable backend built on [`wgpu`](https://wgpu.rs): the same
+WGSL compute shaders run on Vulkan, DX12, and Metal. Weights upload once, the KV cache
+lives on the GPU, and each decode step runs on-device with only the logits read back.
+Quantized weights (Q8_0, Q4_K, Q6_K) stay quantized on the GPU and are dequantized in
+the shader, so VRAM ≈ the GGUF file size. Scope today: Llama-family chat models and
+Whisper.
 
 ```bash
-# Build with the wgpu feature, then select the backend (Llama/Qwen/Mistral):
 cargo build --release -p sapient-cli --features wgpu
 ./target/release/sapient chat openhorizon/qwen2.5-0.5b --backend wgpu
-```
 
-**Quantized weights stay quantized on the GPU** (Q8_0, Q4_K, Q6_K): raw ggml blocks
-upload without f32 expansion and are dequantized inside the shader — a Q4_K_M GGUF
-loads **fully quantized**, so VRAM ≈ the GGUF file size. Measured on Apple M4
-(16 GB, wgpu→Metal): SmolLM2-360M Q8_0 weights resident 1.6 GiB → **388 MiB** with
-greedy output token-identical to the f32 path; Qwen2.5-1.5B Q4_K_M weights resident
-6.8 GiB → **1.06 GiB** (198/198 matrices quantized), peak process footprint
-14.7 → 3.6 GB, decode 14.3 tok/s. On a 16 GB machine the old f32 path ran out of
-memory at 1.5B (empty replies); the quantized-resident path answers correctly.
-(On Apple Silicon the `-metal` MLX build is the fast path — wgpu's value is
-Intel/AMD/Nvidia, where it is SAPIENT's way to run these models quantized on the
-GPU, and small-VRAM cards, where VRAM ≈ file size is the difference between
-loading and not.) F16/BF16 safetensors linears are
-online-quantized to Q8_0 on upload, same as the CPU engine.
-
-The KV cache is **f16** (packed halves, f32 accumulation — works on any adapter,
-no shader-f16 feature needed), which doubles the on-GPU context window to 8192 at
-the same memory cost as the old f32@4096 cache. Each decoded token's kernels are
-batched into **one queue submission** (was ~450), worth +27% decode on a 360M
-model and +4% on 1.5B (M4/Metal).
-
-Prompts prefill in 128-token batched chunks (1.5× faster time-to-first-token on
-long prompts); decode runs one token at a time.
-
-Current scope: Llama-family models. Tiled-GEMM prefill and buffer reuse are
-tracked in [ROADMAP Phase 3b](docs/ROADMAP.md).
-
-**Benchmark it on your machine.** `scripts/bench_wgpu.py` times TTFT and decode tok/s
-across backends so you can see what your GPU buys you — works on any OS/vendor, needs
-only Python's standard library:
-
-```bash
-python3 scripts/bench_wgpu.py                       # cpu vs wgpu (vs metal on a Mac)
+python3 scripts/bench_wgpu.py                       # time cpu vs wgpu (vs metal on a Mac) on your machine
 python3 scripts/bench_wgpu.py --model openhorizon/qwen2.5-1.5b --tokens 128
-python3 scripts/bench_wgpu.py --chart bench.png     # + a bar chart (needs matplotlib)
+```
+
+Where it stands: on a strong CPU it is not the fastest path (Apple M4: 14.3 tok/s on
+Qwen2.5-1.5B through wgpu, against 40–50 on the CPU engine and 82 on the `-metal`
+build). Its value is running quantized models on non-Apple GPUs and on small-VRAM
+cards. Intel Arc and AMD Radeon numbers are still unmeasured — datapoints welcome
+(`scripts/bench_gpu_7_6.sh`).
+
+<details>
+<summary>Measured details (Apple M4, wgpu → Metal)</summary>
+
+- SmolLM2-360M Q8_0: weights resident 1.6 GiB → **388 MiB**, greedy output
+  token-identical to the f32 path.
+- Qwen2.5-1.5B Q4_K_M: weights resident 6.8 GiB → **1.06 GiB** (198/198 matrices
+  quantized), peak process footprint 14.7 → 3.6 GB. On a 16 GB machine the old f32
+  path ran out of memory at 1.5B; the quantized path answers correctly.
+- The KV cache is f16 (packed halves, f32 accumulation — no shader-f16 feature
+  needed), which doubles the on-GPU context window to 8192 at the same memory cost.
+- Each decoded token's kernels go out in one queue submission (was ~450): +27% decode
+  on a 360M model, +4% on 1.5B.
+- Prompts prefill in 128-token batched chunks (1.5× faster time-to-first-token on long
+  prompts).
+
+</details>
+
+---
+
+## Rust API
+
+SAPIENT is **not published to crates.io** — depend on it via git:
+
+```toml
+[dependencies]
+sapient-generate = { git = "https://github.com/SkidGod4444/sapient" }
+tokio = { version = "1", features = ["full"] }
+```
+
+```rust
+use sapient_generate::Pipeline;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Downloads, caches, and runs — zero config needed
+    let p = Pipeline::from_pretrained("openhorizon/phi-2").await?;
+    println!("{}", p.generate("The key to good software is").await?);
+    Ok(())
+}
+```
+
+### Chat (Instruct Models)
+
+```rust
+use sapient_tokenizers::ChatMessage;
+
+let p = Pipeline::from_pretrained("openhorizon/phi-2").await?;
+let reply = p.chat(&[
+    ChatMessage::system("You are a helpful coding assistant."),
+    ChatMessage::user("Write a Rust function to reverse a string."),
+]).await?;
+println!("{reply}");
+```
+
+### Streaming
+
+```rust
+use futures::StreamExt;
+
+let mut stream = p.generate_stream("Once upon a time").await;
+while let Some(token) = stream.next().await {
+    print!("{token}");
+}
+```
+
+### Custom Sampling
+
+```rust
+use sapient_generate::{GenerationConfig, SamplingStrategy};
+
+let cfg = GenerationConfig {
+    max_new_tokens: 200,
+    strategy: SamplingStrategy::TopP { p: 0.95, temperature: 0.8 },
+    stop_sequences: vec!["<|end|>".into()],
+    ..Default::default()
+};
+let text = p.generate_with_config("Write a haiku about Rust", &cfg).await?;
 ```
 
 ---
 
-## HTTP Server — OpenAI-compatible
+## Configuration
 
-`sapient serve` starts an **OpenAI-compatible HTTP server** backed by the native chat
-pipeline. No model is loaded at startup — the first API request triggers model download
-and load automatically (Ollama-style lazy loading).
-
-```bash
-# Start the server (lazy model load on first request; default port 11435)
-sapient serve
-
-# With speculative decoding enabled, on another port
-sapient serve --port 8080 --speculative
-```
-
-| Endpoint | Purpose |
-|---|---|
-| `GET /v1/models` | List loaded model(s) |
-| `POST /v1/chat/completions` | OpenAI-compatible chat — plain text, **image parts** (base64 data URIs), and **tool calling** |
-| `POST /v1/completions` | Raw text completion |
-| `POST /v1/audio/transcriptions` | OpenAI-compatible speech-to-text (multipart audio upload) |
-| `POST /v1/audio/speech` | OpenAI-compatible text-to-speech → WAV (Kokoro, 54 voices) |
-| `GET /v1/health` | Liveness check |
-
-`/v1/chat/completions` accepts OpenAI-style image content parts as **base64 data URIs**,
-routed through the same vision engine as `sapient see` (smolvlm-256m, gemma-3-4b,
-medgemma-4b). Remote image URLs are refused by design — your inference box never makes
-surprise egress. The server keeps the N most-recently-used models resident (multi-model
-LRU cache, `--max-models` / `--cache-gb`), so switching back to a recent model is
-instant instead of a cold reload.
-
-Example with `curl`:
-
-```bash
-curl http://localhost:11435/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "openhorizon/qwen2.5-0.5b-q4",
-    "messages": [{"role": "user", "content": "Hello!"}]
-  }'
-```
-
-The server is compatible with any OpenAI-client SDK or tool (LangChain, LlamaIndex, etc.)
-by pointing the base URL at `http://localhost:11435/v1`.
-
-### Tool calling — a local backend for agents
-
-`/v1/chat/completions` speaks OpenAI **`tools`** / **`tool_choice`**, so an agent framework
-can drive SAPIENT unmodified. Point the Vercel AI SDK, LangChain, or the OpenAI SDK at
-`localhost` and your agent loop runs entirely on-device.
-
-Use a **tool-trained** model — every `qwen2.5-*` alias resolves to Qwen2.5-Instruct, which is:
-
-```bash
-curl http://localhost:11435/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "qwen2.5-3b",
-    "messages": [{"role": "user", "content": "What is the weather in Paris?"}],
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "get_weather",
-        "description": "Get the weather for a city",
-        "parameters": {
-          "type": "object",
-          "properties": {"city": {"type": "string"}},
-          "required": ["city"]
-        }
-      }
-    }]
-  }'
-```
-
-```json
-{"choices": [{
-  "message": {"role": "assistant", "content": null, "tool_calls": [
-    {"id": "call_…", "type": "function",
-     "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}}
-  ]},
-  "finish_reason": "tool_calls"
-}]}
-```
-
-Send the result back as a `{"role": "tool", "tool_call_id": …, "content": …}` message and the
-model continues. That is the whole loop; SDKs do it for you.
-
-**`tool_choice` is binding, not advisory.** `"auto"` lets the model decide, `"none"` suppresses
-the tools entirely, and **`"required"`** — or a named function, `{"type":"function","function":
-{"name":"look"}}` — *forces* a call. This matters when an answer must not come from imagination:
-a small model asked "what do you see?" will otherwise happily describe a scene it never looked
-at. Under `required` it calls the tool instead.
-
-> **Model size is a correctness knob here.** Tool-calling quality falls off sharply below ~3B.
-> Qwen2.5-1.5B will answer perception questions from imagination under `tool_choice: "auto"`;
-> 3B calls the tool. Prefer 3B+ for agent work, or force the call.
-
-### Text-to-speech
-
-```bash
-curl http://localhost:11435/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{"model": "kokoro-82m", "input": "Hello from your own silicon.", "voice": "af_heart"}' \
-  --output hello.wav
-```
-
-Returns a 16-bit PCM WAV. `response_format` accepts `wav` or `pcm` — SAPIENT has no MP3 encoder,
-and rejects other formats loudly rather than mislabelling WAV bytes as `audio/mpeg`.
-
----
-
-## HuggingFace Token (Gated Models)
+### Hugging Face token (gated models)
 
 For models whose upstream Hugging Face repo requires access approval — accept the
 terms on the model's Hugging Face page first, then provide a token:
@@ -684,6 +686,23 @@ export HF_TOKEN=hf_your_token_here
 # Or set once via CLI
 sapient login
 ```
+
+### Fast downloads
+
+Sapient uses parallel HTTP range requests and concurrent shard downloads (via the Rust `hf-hub` client). Fast downloads are **on by default**.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SAPIENT_HUB_MAX_PARALLEL` | `min(CPU cores, 8)` | Concurrent download workers |
+| `SAPIENT_HUB_CHUNK_SIZE` | `10000000` (10 MiB) | HTTP range chunk size |
+| `SAPIENT_FAST_DOWNLOAD` | `1` | Set to `0` to disable parallel mode |
+
+```bash
+# Example: limit workers on a slow connection
+SAPIENT_HUB_MAX_PARALLEL=2 sapient pull <model>
+```
+
+> **Note:** Python-only accelerators like `hf_xet` are not available in the Rust CLI. Sapient achieves similar gains through parallel range requests and concurrent multi-shard downloads.
 
 ---
 

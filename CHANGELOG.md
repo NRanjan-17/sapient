@@ -5,6 +5,14 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 📖 README refresh
+
+- New "What it is" and quick-start sections; CLI commands grouped by task; the
+  performance section leads with one table and keeps every caveat in a
+  "read before quoting" block; adds the 2026-10 vision numbers.
+- Corrected: `serve` examples use the real default port (11435), the gated-model
+  list, the `-q4` model table, and "pure Rust" wording.
+
 ### 👁️ Vision tower ~50% faster (bit-identical)
 
 - SmolVLM image encode: **Apple M4 1140 → ~555 ms** (4 threads: 1410 → ~750 ms);
