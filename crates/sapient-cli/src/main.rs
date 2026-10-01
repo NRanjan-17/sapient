@@ -21,7 +21,8 @@ use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use sapient_generate::{
     detect_devices, mac_gpu_support, recommend_backend, GenerationBackend, LoadOptions, Pipeline,
-    SpeakPipeline, SpeculativePipeline, TranscribeOptions, TranscribePipeline, ORPHEUS_VOICES,
+    SamplingStrategy, SpeakPipeline, SpeculativePipeline, TranscribeOptions, TranscribePipeline,
+    ORPHEUS_VOICES,
 };
 use sapient_hub::LoadOptions as HubLoadOptions;
 use sapient_runtime::{InferenceSession, Model, ModelConfig, SessionOptions};
@@ -322,8 +323,8 @@ enum Commands {
         iters: usize,
     },
 
-    /// LLM generation benchmark: measures load time, TTFT, tok/s, and peak RAM.
-    /// Outputs a side-by-side comparison table suitable for competing with Ollama.
+    /// LLM generation benchmark: load time, TTFT, decode-only tok/s, and peak RSS.
+    /// Greedy decode with exact token counts; warm-up runs are excluded from the means.
     #[command(name = "bench-llm", visible_aliases = ["bllm"], hide = true)]
     BenchLlm {
         /// Model alias (e.g. `openhorizon/qwen2.5-0.5b-q4`) or local .gguf path.
@@ -341,9 +342,13 @@ enum Commands {
         #[arg(long, default_value = "50")]
         max_tokens: usize,
 
-        /// Number of generation runs (more = better statistics).
+        /// Number of measured generation runs (more = better statistics).
         #[arg(long, default_value = "3")]
         runs: usize,
+
+        /// Warm-up generations before the measured runs (excluded from the means).
+        #[arg(long, default_value = "1")]
+        warmup: usize,
 
         /// Force memory-mapped weight loading.
         #[arg(long)]
@@ -579,6 +584,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
             prompt,
             max_tokens,
             runs,
+            warmup,
             mmap,
             backend,
             json,
@@ -588,6 +594,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 &prompt,
                 max_tokens,
                 runs,
+                warmup,
                 mmap,
                 &backend,
                 json,
@@ -2463,37 +2470,90 @@ fn make_dummy_inputs(session: &InferenceSession, _batch_size: usize) -> HashMap<
 
 // ── bench-llm ─────────────────────────────────────────────────────────────────
 
-/// Current process resident set size in bytes.
-/// Linux: reads /proc/self/status VmRSS.
-/// macOS: spawns `ps -o rss= -p PID` (no libc required).
-fn resident_set_bytes() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-            for line in status.lines() {
-                if let Some(rest) = line.strip_prefix("VmRSS:") {
-                    if let Ok(kb) = rest.trim().trim_end_matches(" kB").trim().parse::<u64>() {
-                        return kb * 1024;
-                    }
-                }
-            }
-        }
+/// Peak resident set size of this process in bytes (high-water mark, not the
+/// current RSS). `getrusage` reports `ru_maxrss` in bytes on Darwin and in
+/// kilobytes on Linux/BSD.
+#[cfg(unix)]
+fn peak_rss_bytes() -> u64 {
+    // SAFETY: `rusage` is plain-old-data and `getrusage` only writes into it.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return 0;
     }
-    #[cfg(target_os = "macos")]
-    {
-        let pid = std::process::id();
-        if let Ok(out) = std::process::Command::new("ps")
-            .args(["-o", "rss=", "-p", &pid.to_string()])
-            .output()
-        {
-            if let Ok(s) = std::str::from_utf8(&out.stdout) {
-                if let Ok(kb) = s.trim().parse::<u64>() {
-                    return kb * 1024;
-                }
-            }
-        }
+    let max = usage.ru_maxrss.max(0) as u64;
+    if cfg!(target_os = "macos") {
+        max
+    } else {
+        max * 1024
     }
+}
+
+#[cfg(not(unix))]
+fn peak_rss_bytes() -> u64 {
     0
+}
+
+/// One timed bench-llm generation.
+struct BenchSample {
+    ttft_ms: u64,
+    elapsed_ms: u64,
+    tokens: usize,
+    /// Decode-only throughput: `(tokens − 1) / (t_last − t_first)` — prefill
+    /// and TTFT are excluded.
+    decode_tps: f64,
+    /// Generation ended on EOS before reaching `--max-tokens`.
+    hit_eos: bool,
+}
+
+/// Greedy generation of up to `max_tokens` tokens, timestamping every token as
+/// the engine produces it (exact token count — no re-tokenization of the reply).
+fn bench_llm_generate(
+    pipeline: &Pipeline,
+    prompt_ids: &[u32],
+    eos_ids: &[u32],
+    max_tokens: usize,
+) -> Result<BenchSample> {
+    let mut stamps: Vec<Instant> = Vec::with_capacity(max_tokens);
+    let start = Instant::now();
+    // The engine runs synchronously on this thread; keep the runtime healthy.
+    tokio::task::block_in_place(|| {
+        pipeline.generate_token_ids_streaming(
+            prompt_ids,
+            max_tokens,
+            eos_ids,
+            SamplingStrategy::Greedy,
+            |_| {
+                stamps.push(Instant::now());
+                true
+            },
+        )
+    })?;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+
+    let tokens = stamps.len();
+    let ttft_ms = stamps
+        .first()
+        .map(|t| t.duration_since(start).as_millis() as u64)
+        .unwrap_or(0);
+    let decode_tps = match (stamps.first(), stamps.last()) {
+        (Some(first), Some(last)) if tokens >= 2 => {
+            let span = last.duration_since(*first).as_secs_f64();
+            if span > 0.0 {
+                (tokens - 1) as f64 / span
+            } else {
+                0.0
+            }
+        }
+        _ => 0.0,
+    };
+
+    Ok(BenchSample {
+        ttft_ms,
+        elapsed_ms,
+        tokens,
+        decode_tps,
+        hit_eos: tokens < max_tokens,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2502,6 +2562,7 @@ async fn bench_llm_command(
     prompt: &str,
     max_tokens: usize,
     runs: usize,
+    warmup: usize,
     force_mmap: bool,
     backend: &str,
     json_out: bool,
@@ -2510,20 +2571,27 @@ async fn bench_llm_command(
 
     // ── Load model (timed) ──────────────────────────────────────────────────
     let load_start = Instant::now();
-    let opts = LoadOptions {
-        backend: backend_kind,
-        force_mmap,
-        generation: sapient_generate::GenerationConfig {
-            max_new_tokens: max_tokens,
-            ..Default::default()
-        },
-        ..LoadOptions::default()
-    };
-
     let load_spinner = (!json_out).then(|| ui::spinner(format!("loading {model}…")));
-    let pipeline = Pipeline::from_pretrained_with_opts(model, opts)
-        .await
-        .with_context(|| format!("failed to load model '{model}'"))?;
+
+    let is_local_gguf = model.ends_with(".gguf") || std::path::Path::new(model).is_file();
+    let pipeline = if is_local_gguf {
+        // Local GGUF file: load directly without Hub download (same routing as `chat`).
+        let loaded = if force_mmap {
+            Pipeline::from_gguf_mmap_with_backend(model, backend_kind).await
+        } else {
+            Pipeline::from_gguf_with_backend(model, backend_kind).await
+        };
+        loaded.with_context(|| format!("failed to load GGUF '{model}'"))?
+    } else {
+        let opts = LoadOptions {
+            backend: backend_kind,
+            force_mmap,
+            ..LoadOptions::default()
+        };
+        Pipeline::from_pretrained_with_opts(model, opts)
+            .await
+            .with_context(|| format!("failed to load model '{model}'"))?
+    };
     let load_ms = load_start.elapsed().as_millis() as u64;
 
     if let Some(pb) = load_spinner {
@@ -2536,57 +2604,64 @@ async fn bench_llm_command(
         if pipeline.is_mmap() { " · mmap" } else { "" }
     );
 
-    // ── Benchmark runs ──────────────────────────────────────────────────────
+    // ── Prompt (chat-templated, tokenized once) ─────────────────────────────
     let messages = vec![ChatMessage::user(prompt)];
-    let mut run_results: Vec<ui::BenchRun> = Vec::with_capacity(runs);
-    let mut json_runs: Vec<serde_json::Value> = Vec::with_capacity(runs);
+    let prompt_text = pipeline.format_chat_prompt(&messages)?;
+    let prompt_ids = pipeline.tokenizer().encode(&prompt_text)?;
+    let eos_ids = pipeline.eos_token_ids_pub();
 
-    for i in 0..runs {
-        pipeline.reset_cache();
-
-        let gen_start = Instant::now();
-        let mut stream = pipeline.chat_stream(&messages).await;
-
-        let mut reply = String::new();
-        let mut ttft_ms = 0u64;
-        let mut first = true;
-
-        while let Some(chunk) = stream.next().await {
-            if first {
-                ttft_ms = gen_start.elapsed().as_millis() as u64;
-                first = false;
-            }
-            reply.push_str(&chunk);
-        }
-
-        let elapsed_ms = gen_start.elapsed().as_millis() as u64;
-        let total_tokens = pipeline
-            .tokenizer()
-            .encode(&reply)
-            .map(|t| t.len())
-            .unwrap_or_default();
-        let tps = if elapsed_ms > 0 {
-            total_tokens as f64 / (elapsed_ms as f64 / 1000.0)
-        } else {
-            0.0
-        };
-
-        run_results.push(ui::BenchRun {
-            run: i + 1,
-            ttft_ms,
-            tps,
-            total_tokens,
-        });
-        json_runs.push(serde_json::json!({
+    // ── Warm-up runs (timed but excluded from every mean) ───────────────────
+    let mut json_warmup: Vec<serde_json::Value> = Vec::with_capacity(warmup);
+    for i in 0..warmup {
+        let s = bench_llm_generate(&pipeline, &prompt_ids, &eos_ids, max_tokens)?;
+        json_warmup.push(serde_json::json!({
             "run": i + 1,
-            "ttft_ms": ttft_ms,
-            "elapsed_ms": elapsed_ms,
-            "total_tokens": total_tokens,
-            "tps": (tps * 10.0).round() / 10.0,
+            "ttft_ms": s.ttft_ms,
+            "elapsed_ms": s.elapsed_ms,
+            "total_tokens": s.tokens,
+            "tps": (s.decode_tps * 10.0).round() / 10.0,
         }));
     }
 
-    let peak_rss_mb = resident_set_bytes() / (1024 * 1024);
+    // ── Benchmark runs ──────────────────────────────────────────────────────
+    let mut run_results: Vec<ui::BenchRun> = Vec::with_capacity(runs);
+    let mut json_runs: Vec<serde_json::Value> = Vec::with_capacity(runs);
+    let mut any_eos = false;
+
+    for i in 0..runs {
+        let s = bench_llm_generate(&pipeline, &prompt_ids, &eos_ids, max_tokens)?;
+        any_eos |= s.hit_eos;
+
+        run_results.push(ui::BenchRun {
+            run: i + 1,
+            ttft_ms: s.ttft_ms,
+            tps: s.decode_tps,
+            total_tokens: s.tokens,
+        });
+        // `tps` is decode-only; `e2e_tps` is tokens ÷ total time (TTFT included).
+        let e2e_tps = if s.elapsed_ms > 0 {
+            s.tokens as f64 / (s.elapsed_ms as f64 / 1000.0)
+        } else {
+            0.0
+        };
+        json_runs.push(serde_json::json!({
+            "run": i + 1,
+            "ttft_ms": s.ttft_ms,
+            "elapsed_ms": s.elapsed_ms,
+            "total_tokens": s.tokens,
+            "tps": (s.decode_tps * 10.0).round() / 10.0,
+            "e2e_tps": (e2e_tps * 10.0).round() / 10.0,
+            "hit_eos": s.hit_eos,
+        }));
+    }
+
+    let peak_rss_mb = peak_rss_bytes() / (1024 * 1024);
+
+    if any_eos {
+        ui::hint_err(format!(
+            "a run ended on end-of-turn before {max_tokens} tokens — use a longer-answer prompt for a fixed-length comparison"
+        ));
+    }
 
     // ── Output ──────────────────────────────────────────────────────────────
     if json_out {
@@ -2600,16 +2675,26 @@ async fn bench_llm_command(
         } else {
             run_results.iter().map(|r| r.tps).sum::<f64>() / run_results.len() as f64
         };
+        let mean_tps = (mean_tps * 10.0).round() / 10.0;
         let out = serde_json::json!({
             "model": model,
             "backend": backend_label,
             "mmap": pipeline.is_mmap(),
+            "sapient_version": env!("CARGO_PKG_VERSION"),
+            "threads": std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+            "method": "greedy; tps = decode-only (tokens − 1) / (t_last_token − t_first_token); \
+                       ttft_ms = prompt prefill + first token; warm-up runs excluded from means; \
+                       peak_rss_mb = getrusage ru_maxrss (process high-water mark)",
             "load_time_ms": load_ms,
             "prompt": prompt,
+            "prompt_tokens": prompt_ids.len(),
+            "max_tokens": max_tokens,
+            "warmup": json_warmup,
             "runs": json_runs,
             "summary": {
                 "mean_ttft_ms": mean_ttft,
-                "mean_tps": (mean_tps * 10.0).round() / 10.0,
+                "mean_tps": mean_tps,
+                "decode_tps": mean_tps,
                 "peak_rss_mb": peak_rss_mb,
             }
         });

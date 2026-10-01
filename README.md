@@ -41,9 +41,8 @@ irm https://github.com/SkidGod4444/sapient/releases/latest/download/install.ps1 
 
 ### Homebrew (macOS)
 
-```bash
-brew install skidgod4444/tap/sapient
-```
+The Homebrew tap is not currently published — use the install script above or a
+direct download.
 
 ### Direct Download
 
@@ -145,7 +144,7 @@ sapient login
 # Show config/architecture info for a model
 sapient info openhorizon/phi-2
 
-# Detect CPU/GPU, estimate tok/s, get a backend recommendation
+# Detect CPU/GPU, get a backend recommendation (tok/s shown is a rough estimate)
 sapient devices
 sapient backend-info
 
@@ -418,37 +417,51 @@ implementing and validating its architecture in `sapient-models`.
 ## Performance (Apple M4 16 GB · Raspberry Pi 5 · Jetson AGX Thor)
 
 **Head-to-head vs llama.cpp and Ollama** (same GGUF file, same machine, same
-session — re-measured on the **v0.5.3** binaries, 2026-07-09; method + full
-tables in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)):
+session — measured on the **v0.5.3** binaries, 2026-07-09; the Qwen rows were
+independently re-measured on v0.6.0 on 2026-10-01 and the ratios held. Method,
+caveats and full tables in [docs/BENCHMARKS.md](docs/BENCHMARKS.md)):
 
 | Apple M4 (Metal/GPU), decode tok/s | SAPIENT `-metal` | llama.cpp (Metal) | Ollama |
 |---|---|---|---|
-| Llama-3.2-1B Q4_K_M | **90.6** | 111.3 | 60.4† |
-| Qwen2.5-1.5B Q4_K_M | **82.2** | 88.4 | 86.3 |
+| Llama-3.2-1B Q4_K_M | 90.6 | **111.3** | 60.4† |
+| Qwen2.5-1.5B Q4_K_M | 82.2 | **88.4** | 86.3 |
 
-† Ollama's default `llama3.2:1b` tag ships Q8_0, not Q4_K_M.
+† Ollama's default `llama3.2:1b` tag ships Q8_0, not Q4_K_M, so that cell is not a
+same-quant comparison. On the same-quant Qwen row SAPIENT and Ollama are level.
 
-SAPIENT-Metal sits **within 10–20% of llama.cpp-Metal and beats Ollama by 1.5×
-on the 1B** — with the **lowest TTFT of the three** (52–63 ms warm vs Ollama's
-~130–150 ms) — from a single daemon-free ~22 MB binary. The
+**Precision caveat:** the `-metal` build re-quantizes every weight to MLX 4-bit
+(group 64) at load, whatever the GGUF's quant — so the Metal column reads the same
+*file* as llama.cpp but does not run the same *precision* (a Q4_K_M file keeps
+roughly a third of its weights at Q6_K in llama.cpp). The CPU path runs the file's
+own blocks.
+
+SAPIENT-Metal sits **within 10–20% of llama.cpp-Metal**, with a warm TTFT of
+52–63 ms (Ollama's ~130–150 ms figure is a `total − eval` proxy, not a streamed
+first token) — from a single daemon-free binary (v0.6.0: ~50 MB CPU build; the
+`-metal` build is ~60 MB plus an 88 MB `mlx.metallib`). The
 **`MlxForwardEngine`** runs the whole forward pass as one MLX lazy graph: every
 activation stays on the GPU, one `eval()` per token.
 
-**The CPU engine is within 1.3–1.6× of llama.cpp** (was 1.8–3.8× at v0.5.0) after
+**The CPU engine is within ~1.3–1.65× of llama.cpp** (was 1.8–3.8× at v0.5.0) after
 the v0.5.1 kernel ladder — multi-row GEMV, `Q4_K_R4` load-time weight repacking,
 W6A8 SDOT Q6_K, and i8mm SMMLA prefill kernels, every rung bit-identity-gated:
 
-| CPU decode, tok/s | SAPIENT | llama.cpp |
+| CPU decode, tok/s | SAPIENT (all cores) | llama.cpp (4 threads on M4) |
 |---|---|---|
 | Apple M4 — Llama-3.2-1B Q4_K_M | 56.7 | **83.1** |
 | Apple M4 — Qwen2.5-1.5B Q4_K_M | 40.6 | **66.5** |
-| Raspberry Pi 5 (16 GB) — Llama-3.2-1B Q4_K_M (v0.5.1 run) | 11.6 | **14.7** |
+| Raspberry Pi 5 (16 GB) — Llama-3.2-1B Q4_K_M | 11.5‡ | **14.7**‡ |
 
-A Pi 5 went **1.3 → 11.6 tok/s (8.9×)** on this model across v0.5.0 + v0.5.1 — 1B-class
+‡ Different sessions: SAPIENT from the v0.5.1 run, llama.cpp from the v0.5.0 session
+(an older llama.cpp build). Treat the Pi ratio as approximate until re-measured together.
+Each engine runs its best thread setting on the M4 (llama.cpp is ~3× slower at 10 threads
+than at 4 because of the efficiency cores).
+
+A Pi 5 went **1.3 → 11.5 tok/s (8.8×)** on this model across v0.5.0 + v0.5.1 — 1B-class
 chat on a Pi is genuinely interactive. CPU prefill is 1.5× (M4) to 2× (Jetson Thor)
 faster than v0.5.0 on long prompts. (These ratios hold on NEON-class CPUs — M-series,
 Pi. SVE-class server ARM (Grace/Thor Neoverse) still trails llama.cpp's KleidiAI
-microkernels ~3× on dense decode; closing that is its own roadmap project.)
+microkernels ~2.6× on dense decode; closing that is its own roadmap project.)
 
 ### Sparse MoE — big models on small devices (v0.5.3)
 
@@ -460,15 +473,18 @@ A **47B Mixtral-8x7B** and a **106B GLM-4.5-Air** run fully on-device in pure Ru
 | Mixtral-8x7B (47B-A13B, ≈ 26 GB) | 5.5 tok/s | ~6–9 tok/s | 25.6 GB (mmap ≈ file size) |
 | GLM-4.5-Air (106B-A12B, ≈ 63 GB split GGUF) | 3.2 tok/s | 3.9 tok/s | 72 GB — fits a 96 GB device |
 
-**Zero quality loss:** greedy output is token-identical to llama.cpp on the same file
-(~28 tokens, then benign f32-order drift) — and SAPIENT loads the classic per-expert
+**Quality check:** on the one prompt tested, greedy output is token-identical to
+llama.cpp on the same file for ~28 tokens, then diverges on a near-tie (no perplexity
+or eval-suite comparison has been run yet; the Mixtral comparison used llama.cpp
+`b1928`, the last build that loads this file layout) — and SAPIENT loads the classic per-expert
 Mixtral GGUFs that current llama.cpp rejects. MoE models mmap by default (RSS ≈ file
 size), and quant types SAPIENT can't keep as packed blocks (e.g. Q5_0 in "dynamic"
 quants) re-quantize to Q8_0 at load instead of exploding to F32 (GLM peak RSS
 118 → 72 GB). Full decomposition in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-**Serving head-to-head** (`sapient serve` vs Ollama vs vLLM, Apple M4 / Metal): SAPIENT
-beats Ollama on TTFT (**4.2×**, 14 ms vs 59 ms), decode (**1.25×**), concurrent
+**Serving head-to-head** (`sapient serve` vs Ollama vs vLLM, Apple M4 / Metal —
+measured 2026-05-31 on v0.3.5, small samples; see the method caveats in the linked
+page): SAPIENT beats Ollama on TTFT (**4.2×**, 14 ms vs 59 ms), decode (**1.25×**), concurrent
 throughput (**1.31×**, 1.9× lower p95), and model switch-back (**6×**). vLLM is a
 datacenter-GPU engine and doesn't run on this edge box. Charts + method:
 **[docs/SERVING_BENCHMARKS.md](docs/SERVING_BENCHMARKS.md)**.
@@ -490,7 +506,7 @@ Key improvements:
   `Q4_K_R4` load-time row-interleaved repacking (one contiguous weight stream per task),
   W4A8/W6A8 SDOT dot products, and i8mm SMMLA prefill kernels (two prompt tokens per
   weight pass on ARMv8.6 cores). Each kernel bit-identity-gated against a scalar oracle.
-- **`sapient devices`** — detect CPU/GPU, estimate tok/s, recommend backend before loading a model.
+- **`sapient devices`** — detect CPU/GPU, recommend a backend, and print a rough bandwidth-based tok/s estimate (not calibrated against the measured tables) before loading a model.
 
 ### Cross-platform GPU (Intel / AMD / Nvidia)
 
@@ -517,7 +533,7 @@ greedy output token-identical to the f32 path; Qwen2.5-1.5B Q4_K_M weights resid
 14.7 → 3.6 GB, decode 14.3 tok/s. On a 16 GB machine the old f32 path ran out of
 memory at 1.5B (empty replies); the quantized-resident path answers correctly.
 (On Apple Silicon the `-metal` MLX build is the fast path — wgpu's value is
-Intel/AMD/Nvidia, where it's the only way to run these models quantized on the
+Intel/AMD/Nvidia, where it is SAPIENT's way to run these models quantized on the
 GPU, and small-VRAM cards, where VRAM ≈ file size is the difference between
 loading and not.) F16/BF16 safetensors linears are
 online-quantized to Q8_0 on upload, same as the CPU engine.

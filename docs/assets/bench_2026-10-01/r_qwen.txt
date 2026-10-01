@@ -1,0 +1,4 @@
+qwen-1.5b-Q4_K_M cpu SAPIENT decode tok/s per-round=[41.6, 44.2, 44.7] min-based=44.2  (T16=[0.84, 0.92, 0.95] T400=[10.07, 9.6, 9.54])
+qwen-1.5b-Q4_K_M cpu llama.cpp tg128 avg±sd per-round=[(60.4, 2.9), (63.5, 1.2), (63.4, 0.9)]
+qwen-1.5b-Q4_K_M metal SAPIENT decode tok/s per-round=[72.3, 74.7, 76.0] min-based=72.3  (T16=[2.13, 2.52, 2.42] T400=[7.44, 7.66, 7.47])
+qwen-1.5b-Q4_K_M metal llama.cpp tg128 avg±sd per-round=[(78.9, 0.9), (77.4, 3.8), (74.9, 4.0)]

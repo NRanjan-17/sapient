@@ -49,15 +49,15 @@
   (128-bit = NEON width). Closing it = KleidiAI-class NEON microkernels + a
   lower-overhead decode threadpool (fewer parallel regions per token). Deep,
   bounded work; benefits all server ARM, not just MoE.
-- 🚧 **Gemma3 engine** — gemma-3-1b/4b + **MedGemma-4B** (medical chat + medical
+- ✅ **Gemma3 engine** (shipped; GGUF loading + perf work still open) — gemma-3-1b/4b + **MedGemma-4B** (medical chat + medical
   image analysis via the Gemma3 multimodal path). New `Gemma3Forward` (QK-norm,
   sandwich norms, sliding/global attention) + a flash-attention NaN fix any
   sliding-window model needed. GGUF loading + perf work pending.
-- 🚧 **Vision-language (Phase 12 first cut)** — `sapient see <image> -p "…"`:
+- ✅ **Vision-language (Phase 12 first cut, shipped)** — `sapient see <image> -p "…"`:
   SmolVLM-256M (SigLIP tower + pixel-shuffle connector on new `forward/siglip.rs`,
   embedding-splice into the existing Llama engine). Golden test (red fixture → "Red")
   + numeric grid-orientation probe. v1: single global 512² image (no sub-image
-  splitting yet). MedGemma requires a Gemma3 text engine — next engine project.
+  splitting yet). MedGemma runs on the Gemma3 engine above.
   **Server (12.3) done:** `/v1/chat/completions` accepts OpenAI image parts as
   base64 data URIs, routed through `VlmPipeline` in a third LRU cache;
   remote image URLs are refused by design.
@@ -103,7 +103,7 @@
 - ✅ Native F16 GEMV and NEON Q4_K GEMV; adaptive rayon chunking.
 - ✅ SDOT Q8_0 kernel (ARMv8.4A `sdot` via inline asm, runtime-detected, ~3% net gain — bandwidth-bound).
 - ✅ Speculative decoding (`sapient chat --speculative`).
-- ✅ OpenAI-compatible HTTP server (`sapient serve`) with lazy loading + **multi-model LRU cache** (top-N resident, byte-budgeted; instant switch-back vs Ollama's cold reload).
+- ✅ OpenAI-compatible HTTP server (`sapient serve`) with lazy loading + **multi-model LRU cache** (top-N resident, byte-budgeted; instant switch-back; Ollama also keeps multiple models resident via `OLLAMA_MAX_LOADED_MODELS`).
 - ✅ Benchmark suite (`scripts/benchmark-compare.sh`, `scripts/gen-benchmark-report.py`).
 - ✅ `sapient devices` — CPU/GPU detection, backend recommendations, hybrid Metal+CPU plan.
 - ✅ Hybrid Metal+CPU layer-split inference for **both** LlamaForward and PhiForward.
@@ -208,7 +208,8 @@ Radeon, Nvidia, and Apple — and are dev-tested on Apple Silicon (Metal under w
   (random-bit reference tests pin every path). Q4_K_M GGUFs now load **fully
   quantized** (Qwen2.5-1.5B: 198/198): weights resident 2367→**1062 MiB** (≈ GGUF
   file size; 6.4× vs f32), peak footprint 5.4→**3.6 GB**, decode 11.3→**13.2 tok/s —
-  the wgpu path now beats the NEON M4 CPU (11.7) at 1.13×**. TTFT 77 ms.
+  the wgpu path beat the NEON M4 CPU as it stood then (11.7) at 1.13×** — since
+  overtaken: the M4 CPU path now decodes this model at 40–50 tok/s. TTFT 77 ms.
 - ✅ **f16 KV cache** (Phase 7.3, `kv_append{,_f16}.wgsl` + templated attention):
   K/V stored as f16 halves packed two-per-`u32` word, written by a `kv_append`
   conversion kernel and read via core-WGSL `unpack2x16float` — **no `SHADER_F16`
@@ -280,8 +281,9 @@ Notion roadmap's Phase 8 — "Own the Raspberry Pi".)
   time from 80 °C (floor: half the cores), restoring below 70 °C — backs off
   *before* the 85 °C firmware trip so passive boards degrade gracefully instead
   of collapsing. `SAPIENT_THERMAL=off|_HOT|_COOL|_PATH` to tune; inert on
-  machines without thermal zones. Unit-tested against a fake sysfs; on-device
-  Pi validation pending.
+  machines without thermal zones. Unit-tested against a fake sysfs and validated
+  in an on-device Pi 5 soak (backoff costs ~5% decode: 8.70 → 8.23 tok/s — see
+  `docs/PI.md`).
 - ✅ `docs/PI.md`: setup, per-RAM guidance, thermal + voice-loop docs, and the
   measured Pi 5 table (0.5B 8.7 / 1B 8.3 / 1.5B 6.7 / 3B 3.4 tok/s post-fix);
   voice loop measured end-to-end via `converse --input` — re-measured on the
@@ -303,7 +305,7 @@ Notion roadmap's Phase 8 — "Own the Raspberry Pi".)
 - **Success metric:** run a 3B Q4 model on a 4 GB Pi 5 without OOM.
 
 ## Phase 4b — Multi-model server  → **`v0.3.x`**
-- [x] **Multi-model LRU residency** — keep the N most-recently-used models in memory (`--max-models`, default 3), switchable by the `model` field. Switch-back is a cache hit (no reload), ~5× faster than a cold load; beats Ollama's single-resident-model design.
+- [x] **Multi-model LRU residency** — keep the N most-recently-used models in memory (`--max-models`, default 3), switchable by the `model` field. Switch-back is a cache hit (no reload), ~5× faster than a cold load. (Ollama has had multi-model residency since 2024, so this is parity, not an advantage.)
 - [x] **LRU eviction by count + RAM byte budget** (`--cache-gb`, default ~70% of system RAM).
 - [x] **Streaming SSE** for `/v1/chat/completions` and `/v1/completions`; cache lock not held during inference, so different models serve concurrently.
 - [x] **Admission control** — bounded inference concurrency (`--max-concurrency`, tokio semaphore) so bursts queue instead of oversubscribing.

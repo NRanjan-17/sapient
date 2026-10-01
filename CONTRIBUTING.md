@@ -359,6 +359,13 @@ personal hardware is a project rule, not a suggestion.
 
 ### Benchmarks
 
+**Publishing a performance number?** Use `sapient bench-llm <alias | file.gguf> --json`
+(decode-only tok/s, warm-up excluded, real peak RSS) and commit its raw JSON — plus the
+competing engine's raw output — under `docs/assets/bench_<date>/`. State the date,
+versions, thread counts and quant for every engine, and note that the `-metal` build
+runs MLX 4-bit weights regardless of the GGUF's quant. Don't edit older dated sections
+of `docs/BENCHMARKS.md` to match new results; add a new dated section.
+
 ```bash
 cargo bench -p sapient-backends-cpu
 just bench

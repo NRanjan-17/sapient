@@ -10,10 +10,21 @@ For single-request *engine* throughput (SAPIENT vs mlx-lm vs Ollama) see
 [BENCHMARKS.md](BENCHMARKS.md); this doc is about the **HTTP serving** path
 (multi-model residency, concurrency, TTFT under the server, switch-back).
 
+> **Read before quoting these numbers.** They were measured once, on the v0.3.5
+> build (May 2026), and have not been re-run. Method limits of
+> `scripts/bench_compete.py` as it stands: **one** warm request per engine for
+> TTFT and decode; throughput tokens are **estimated as characters ÷ 4**, not
+> counted; the "p95" is the slowest of 4 concurrent requests; the switch-back
+> test uses a different second model per engine (`qwen2.5-1.5b` vs `phi3:mini`);
+> and SAPIENT's Metal path runs MLX 4-bit weights while Ollama runs its tag's own
+> quant. Ollama also keeps recently used models resident, so the "switch-back"
+> row mostly restates the warm-TTFT gap rather than a reload penalty. Treat the
+> table as indicative until it is re-measured with real token counts and n ≥ 5.
+
 ## TL;DR
 
-On a fair, like-for-like edge comparison (Apple M4, GPU, same model), **`sapient
-serve` beats Ollama on time-to-first-token, decode throughput, concurrent
+On the Apple M4 (GPU, same model family), the single run below had **`sapient
+serve` ahead of Ollama on time-to-first-token, decode throughput, concurrent
 throughput, and model switch-back**:
 
 | Metric (Qwen2.5-0.5B, Metal/GPU) | **SAPIENT** | Ollama | SAPIENT advantage |
@@ -94,7 +105,7 @@ continuous batching). It is not built for edge / Apple Silicon:
   also disabled on ARM). Even when it loads, the CPU/ARM backend is far from vLLM's
   design point.
 - vLLM is a Python + PyTorch stack (multi-GB install, CUDA-first). SAPIENT is a
-  single ~24 MB Rust binary with no Python runtime.
+  single Rust binary (~50–60 MB at v0.6.0) with no Python runtime.
 
 A fair vLLM comparison belongs on a CUDA box, not an edge device. The point of
 SAPIENT (and Ollama) is to serve well *where vLLM can't go*.
@@ -102,7 +113,7 @@ SAPIENT (and Ollama) is to serve well *where vLLM can't go*.
 | | **SAPIENT** | Ollama | vLLM |
 |---|---|---|---|
 | Primary target | Edge: CPU + Apple Metal + (wgpu) | Edge: CPU + GPU | Datacenter NVIDIA GPU |
-| Runtime | single Rust binary (~24 MB) | Go binary + llama.cpp | Python + PyTorch (multi-GB) |
+| Runtime | single Rust binary (~50–60 MB at v0.6.0) | Go binary + llama.cpp | Python + PyTorch (multi-GB) |
 | Runs on this Apple M4 | ✅ | ✅ | ❌ (CPU path crashed) |
 | Multi-model resident cache | ✅ LRU (N models) | ✅ (recent versions) | one model / server |
 | Prefix / prompt KV cache | ✅ (CPU engine) | ✅ | ✅ |

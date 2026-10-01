@@ -6,13 +6,13 @@ Usage:
     # After running benchmark-compare.sh:
     python3 scripts/gen-benchmark-report.py \
         --dir  results/benchmark/ \
-        --out  docs/BENCHMARKS.md
+        --out  results/report.md
 
     # Legacy single-engine comparison (still works):
     python3 scripts/gen-benchmark-report.py \
         --sapient results/sapient_result.json \
         --ollama  results/ollama_result.json \
-        --out     docs/BENCHMARKS.md
+        --out     results/report.md
 """
 
 import argparse
@@ -303,17 +303,18 @@ def main():
             results_by_model[model_size][engine] = load_json(path)
 
     elif args.sapient or args.ollama:
-        # Legacy single-pair mode
-        sapient_data = load_json(args.sapient) if args.sapient and os.path.exists(args.sapient) else {
-            "model": "openhorizon/qwen2.5-0.5b-q4",
-            "load_time_ms": 1823,
-            "summary": {"mean_ttft_ms": 305, "mean_tps": 14.3, "peak_rss_mb": 284},
-        }
-        ollama_data = load_json(args.ollama) if args.ollama and os.path.exists(args.ollama) else {
-            "model": "qwen3:4b",
-            "load_time_ms": 1294,
-            "summary": {"mean_ttft_ms": 102, "mean_tps": 28.7},
-        }
+        # Legacy single-pair mode. Both files must exist — never substitute
+        # placeholder numbers into a published report.
+        missing = [p for p in (args.sapient, args.ollama) if not p or not os.path.exists(p)]
+        if missing:
+            print(f"Missing benchmark input file(s): {missing}. "
+                  "Pass real --sapient and --ollama JSON outputs.", file=sys.stderr)
+            sys.exit(1)
+        sapient_data = load_json(args.sapient)
+        ollama_data = load_json(args.ollama)
+        if not sapient_data or not ollama_data:
+            print("Benchmark input file(s) are empty or not valid JSON.", file=sys.stderr)
+            sys.exit(1)
         results_by_model["benchmark"] = {
             "sapient": sapient_data,
             "ollama":  ollama_data,

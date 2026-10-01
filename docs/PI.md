@@ -6,8 +6,11 @@ voice stack (`converse` works out of the box — the ARM release is built native
 with ALSA). This page is the Pi 4/5 playbook: setup, model choices for each RAM
 size, thermal behaviour, and the measured numbers.
 
-> Status: setup, tuning guidance, the throughput table, and the voice-loop
-> numbers are current (measured on the reference Pi 5 16 GB). No Pi 4 numbers
+> Status: setup and tuning guidance are current. The throughput table is the
+> **v0.5.0** measurement (2026-07-03); later kernel work raised it (Llama-3.2-1B
+> 8.3 → 11.0–11.5 tok/s, Qwen2.5-1.5B 6.7 → 9.1 — see `docs/BENCHMARKS.md`), and
+> the full table has not been re-run since. All numbers are from the reference
+> Pi 5 16 GB. No Pi 4 numbers
 > yet — we don't have the hardware; measured rows are welcome (the Pi 4's
 > Cortex-A72 lacks `dotprod`, so expect the slower NEON path).
 

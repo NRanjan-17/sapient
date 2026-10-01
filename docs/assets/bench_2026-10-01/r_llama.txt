@@ -1,0 +1,4 @@
+llama-1b-Q8_0 cpu SAPIENT decode tok/s per-round=[47.6, 50.8, 43.9] min-based=46.5  (T16=[0.9, 1.38, 0.69] T400=[8.97, 8.94, 9.43])
+llama-1b-Q8_0 cpu llama.cpp tg128 avg±sd per-round=[(54.3, 0.2), (53.6, 0.9), (54.2, 0.1)]
+llama-1b-Q8_0 metal SAPIENT decode tok/s per-round=[92.5, 95.1, 103.8] min-based=92.8  (T16=[2.39, 2.81, 2.83] T400=[6.54, 6.84, 6.53])
+llama-1b-Q8_0 metal llama.cpp tg128 avg±sd per-round=[(63.2, 0.4), (63.5, 0.6), (64.3, 0.1)]

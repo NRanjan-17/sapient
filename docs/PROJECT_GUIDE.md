@@ -91,7 +91,7 @@ safe-testing ladder live in `docs/MOBILE.md`.
 
 **Benchmark infrastructure:**
 - `scripts/benchmark-compare.sh` — portable multi-engine benchmark (SAPIENT vs llama.cpp vs Ollama vs llamafile).
-- `scripts/gen-benchmark-report.py` — generates `docs/BENCHMARKS.md` from JSON results.
+- `scripts/gen-benchmark-report.py` — generates a Markdown report from JSON results.
 
 ---
 
@@ -687,12 +687,15 @@ muscles, and everyone shares the basic toolbox at the bottom.
 For **CPU inference** on any platform (Linux, Raspberry Pi, etc.), always use a GGUF
 quantized model rather than F16 safetensors:
 
-| Model | Format | RAM needed | Typical tok/s (Apple M-series, CPU) |
-|---|---|---|---|
-| `openhorizon/qwen2.5-0.5b-q4` | GGUF Q8_0 | ~640 MB | ~18–19 tok/s |
-| `openhorizon/qwen2.5-1.5b-q4` | GGUF Q8_0 | ~1.6 GB | ~10 tok/s |
-| `openhorizon/phi-2-q4` | GGUF Q8_0 | ~2.8 GB | ~5 tok/s |
-| `openhorizon/phi-2` | F16 safetensors | ~2.7 GB | ~2–3 tok/s |
+| Model | Format | Measured decode (Apple M4, CPU) |
+|---|---|---|
+| `openhorizon/llama-3.2-1b-q4` | GGUF Q4_K_M | ~57 tok/s (v0.5.3) |
+| `openhorizon/qwen2.5-1.5b-q4` | GGUF Q4_K_M | ~41–45 tok/s (v0.5.3 / v0.6.0) |
+| `openhorizon/phi-2` | F16 safetensors → online Q8_0 | not re-measured since v0.2.9 |
+
+(Dated measurements and method: `docs/BENCHMARKS.md`. The v0.2.9-era figures that
+used to sit here — 10–19 tok/s — predate the embedding-gather fix and the NEON
+int8 kernel ladder.)
 
 As of v0.2.9, F16 safetensors weights are **auto-quantized to Q8_0 at load time** (online
 quantization), eliminating the F16→F32 conversion overhead on every token. GGUF Q4/Q8 still
@@ -751,13 +754,15 @@ RPi 4 (4 GB) and RPi 5 (8 GB) run aarch64 Linux, so the NEON SIMD kernels apply.
 SAPIENT's Q8_0 and Q4_0 dot products use `vld1q_u8`/`vfmaq_f32` intrinsics — the same
 fast path as Apple M-series chips. Expected throughput:
 
-| Device | Model | Mode | tok/s |
-|---|---|---|---|
-| RPi 5 (8 GB) | qwen2.5-0.5b-q4 | heap | ~3–5 tok/s |
-| RPi 5 (8 GB) | qwen2.5-1.5b-q4 | mmap | ~1–2 tok/s |
-| RPi 4 (4 GB) | smollm2-360m-q4 | heap | ~5–8 tok/s |
+| Device | Model | Measured decode |
+|---|---|---|
+| RPi 5 (16 GB) | qwen2.5-0.5b-q4 | 8.7 tok/s (v0.5.0) |
+| RPi 5 (16 GB) | llama-3.2-1b-q4 | 8.3 tok/s (v0.5.0) → 11.0–11.5 (v0.5.1+) |
+| RPi 5 (16 GB) | qwen2.5-1.5b-q4 | 6.7 tok/s (v0.5.0) → 9.1 (v0.5.1) |
+| RPi 5 (16 GB) | llama-3.2-3b-q4 | 3.4 tok/s (v0.5.0) |
 
-(Measured numbers are estimates — actual performance depends on SD card speed for mmap paging.)
+(Measured on the reference Pi 5 16 GB — see `docs/PI.md` and `docs/BENCHMARKS.md`.
+No Pi 4 or 8 GB-board measurements exist yet.)
 
 ### Linux / NVIDIA (DGX, cloud)
 
@@ -779,7 +784,13 @@ sapient bench-llm openhorizon/qwen2.5-0.5b-q4 \
 sapient bench-llm openhorizon/qwen2.5-0.5b-q4 --json > results.json
 ```
 
-Metrics reported: model load time, time-to-first-token (TTFT), decode tok/s, peak RSS.
+`bench-llm` also accepts a local `.gguf` path. Metrics reported: model load time,
+time-to-first-token (prefill + first token), **decode-only** tok/s
+(`(tokens − 1) / (t_last − t_first)`, greedy, exact token count), and peak RSS
+(`getrusage` high-water mark). `--warmup N` (default 1) runs are timed but excluded
+from the means and listed separately in the JSON. Tools before 2026-10 computed
+tokens ÷ total time over all runs — see the method section of `docs/BENCHMARKS.md`
+before comparing against older numbers.
 
 Full Ollama comparison (requires `ollama serve` running):
 
@@ -788,12 +799,17 @@ bash scripts/benchmark.sh --model 0.5b --runs 3 --out results/
 python3 scripts/gen-benchmark-report.py \
     --sapient results/sapient_result.json \
     --ollama  results/ollama_result.json \
-    --out docs/BENCHMARKS.md
+    --out results/report.md
 ```
 
+(`docs/BENCHMARKS.md` is hand-maintained — don't overwrite it with the generated
+report. The generator exits with an error if either input file is missing.)
+
 See `docs/BENCHMARKS.md` for methodology, reproducibility instructions, and a full side-by-side
-comparison table. The short story: SAPIENT wins on TTFT, peak RAM, binary size, and cold-start
-latency; Ollama wins on sustained tok/s for larger models (acknowledged openly in the report).
+comparison table. The short story (v0.5.3–v0.6.0, Apple M4): SAPIENT-Metal is within 10–20% of
+llama.cpp-Metal and level with Ollama at the same quant; the CPU path is ~1.3–1.65× behind
+llama.cpp; warm TTFT is low (50–65 ms on Metal). Peak RAM on the Metal path is higher than
+mlx-lm's, and no quality (perplexity) comparison has been run yet.
 
 *Happy hacking! If anything here ever stops matching the code, the code wins — please open
 a PR to fix the docs.* 🦜

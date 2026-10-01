@@ -16,6 +16,7 @@ Usage:
 """
 import json
 import os
+import textwrap
 
 import matplotlib
 
@@ -92,22 +93,21 @@ grouped_bars(ax_gpu, models, ["SAPIENT", "llama.cpp", "Ollama"], decode["metal"]
              marks={("Llama-3.2-1B Q4_K_M", "Ollama"): "†"})
 ax_gpu.set_title("Apple Metal (GPU)", fontsize=11, color=INK, pad=10)
 grouped_bars(ax_cpu, models, ["SAPIENT", "llama.cpp"], decode["cpu"], "")
-ax_cpu.set_title("CPU (4 threads)", fontsize=11, color=INK, pad=10)
+ax_cpu.set_title("CPU (SAPIENT: all cores · llama.cpp: 4 threads)", fontsize=11, color=INK, pad=10)
 ax_gpu.legend(loc="upper right", fontsize=8.5, frameon=False, labelcolor=INK_2)
 ax_cpu.legend(loc="upper right", fontsize=8.5, frameon=False, labelcolor=INK_2)
 
 fig.suptitle(
-    f"Decode throughput — same Q4_K_M GGUF, {meta['hardware']}   (higher is better)",
+    f"Decode throughput — same Q4_K_M GGUF files, {meta['hardware']}   (higher is better)",
     fontsize=12.5, color=INK, fontweight="bold", y=1.00,
 )
-fig.text(
-    0.01, 0.005,
+footnote = (
     f"SAPIENT v{meta['sapient_version']} (-metal / CPU builds) · {meta['llamacpp']} · "
     f"Ollama {meta['ollama']} · {meta['date']} · {meta['method_decode']} "
-    f"† Ollama's default llama3.2:1b tag ships Q8_0, not Q4_K_M.",
-    fontsize=7, color=MUTED,
+    f"† Ollama's default llama3.2:1b tag ships Q8_0, not Q4_K_M."
 )
-fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+fig.text(0.01, 0.0, textwrap.fill(footnote, 190), fontsize=7, color=MUTED, va="bottom")
+fig.tight_layout(rect=(0, 0.12, 1, 0.97))
 fig.savefig(os.path.join(ASSETS, "decode_throughput.png"), dpi=140,
             facecolor=SURFACE, bbox_inches="tight")
 print("wrote docs/assets/decode_throughput.png")

@@ -6,7 +6,7 @@
     "sapient_version": "0.5.3",
     "llamacpp": "llama.cpp b9860 (Homebrew)",
     "ollama": "0.12.6",
-    "method_decode": "decode tok/s over 128 generated tokens, same session; llama.cpp = llama-bench tg128 (-r 3); SAPIENT = bench-llm streamed generation (mean of 3 warm runs); Ollama = /api/generate eval_count/eval_duration (mean of 3). Ollama llama-1B uses its default tag (Q8_0).",
+    "method_decode": "decode tok/s over 128 generated tokens, same session; llama.cpp = llama-bench tg128 (-r 3); SAPIENT = bench-llm streamed generation, pre-2026-10 tool: re-tokenized reply tokens / total time incl. TTFT, mean of 3 runs (no warm-up discard); llama.cpp CPU = 4 threads, SAPIENT CPU = all cores; SAPIENT Metal runs MLX 4-bit re-quantized weights; Ollama = /api/generate eval_count/eval_duration (mean of 3). Ollama llama-1B uses its default tag (Q8_0).",
     "method_ttft": "warm-model time to first streamed token; SAPIENT = bench-llm warm-run mean; Ollama = (total_duration - eval_duration) proxy, warm-run mean; llama.cpp omitted (llama-bench reports no TTFT)"
   },
   "decode": {

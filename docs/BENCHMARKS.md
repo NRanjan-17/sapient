@@ -1,11 +1,85 @@
 # SAPIENT Benchmarks — Metal, CPU, vs llama.cpp & Ollama
 
 > First generated 2026-05-31 (v0.3.5); each section carries its own measurement
-> date — **latest refresh 2026-07-09 (v0.5.3)**, directly below.
+> date — latest full refresh 2026-07-09 (v0.5.3); **independent M4 reproduction
+> 2026-10-01 (v0.6.0)** directly below. Sections are a dated log, newest first:
+> older sections are kept as the record of what was measured then and are NOT
+> updated when later work changes the picture — check each section's date.
 
 > This page covers single-request **engine** throughput. For the **HTTP serving**
 > comparison (`sapient serve` vs Ollama vs vLLM — TTFT, concurrency, model
 > switch-back, prefix caching) see [SERVING_BENCHMARKS.md](SERVING_BENCHMARKS.md).
+
+---
+
+## How SAPIENT numbers are measured (read this first)
+
+**From 2026-10 on:** `sapient bench-llm <alias | file.gguf> --json` reports
+**decode-only** throughput — greedy, exact token count,
+`(tokens − 1) / (t_last_token − t_first_token)` — with `--warmup` runs (default 1)
+excluded from every mean, TTFT = prompt prefill + first token, and peak RSS from
+`getrusage` (the process high-water mark). The JSON carries a `method` string,
+the per-run rows, and the warm-up rows; commit it under `docs/assets/` next to
+any number you publish.
+
+**Every SAPIENT `bench-llm` figure dated before 2026-10** (the v0.5.3 and earlier
+tables below) was produced by the old tool, which computed
+`re-tokenized reply length ÷ total time including TTFT`, averaged **all** runs
+(no warm-up discard), and reported end-of-run RSS as "peak". That *understates*
+SAPIENT's decode rate relative to llama.cpp's `llama-bench` tg (pure decode): for
+the 128-token v0.5.3 runs, by roughly 3–4% on Metal (TTFT ~0.05 s) and 15–20% on
+CPU (TTFT 0.37–0.53 s of a ~2.5–3 s run) — conservative, but not the "decode-only,
+run 1 discarded" method some older text describes. The old numbers are left as
+measured; they are not relabelled.
+
+Other definitions in use, by section: the wgpu and Pi tables use
+`scripts/bench_wgpu.py` (streamed chunks over the decode window via `sapient
+serve`); the MoE tables use `tests/moe_bench.rs` (pure decode, `VmHWM`).
+
+**Standing caveats for every comparison on this page**
+
+- **Threads (M4 CPU):** llama.cpp runs `-t 4` (its best setting — it measures ~3×
+  slower at 10 threads because of the efficiency cores); SAPIENT runs all 10 cores.
+  Each engine is at its best configuration, not at matched thread counts.
+- **Metal precision:** the `-metal` build re-quantizes every weight to MLX 4-bit
+  (group 64) at load regardless of the GGUF's quant (`mlx_engine.rs`). "Same GGUF
+  file" on Metal therefore means same file, **not** same precision: llama.cpp and
+  Ollama run the file's own Q4_K/Q6_K (or Q8_0) blocks. Greedy output on Metal
+  diverges from the CPU path within ~13 tokens on the same file (both coherent).
+- **Quality:** no perplexity or eval-suite comparison exists yet. "Token-identical"
+  statements refer to a single prompt's greedy prefix.
+- **Raw data:** only `assets/bench_2026-10-01/` holds per-run output. Earlier
+  sections have summary numbers only.
+
+---
+
+## M4 reproduction on v0.6.0 (2026-10-01)
+
+> Hardware: **Apple M4 (MacBook Pro) · 16 GB.** SAPIENT **v0.6.0** release binaries
+> (CPU build + `-metal`) · **llama.cpp b9860** · **Ollama 0.12.6** — the same
+> llama.cpp/Ollama versions as the v0.5.3 refresh. All engines read the same GGUF
+> files (Ollama's blobs). Other desktop apps were running, so absolutes sit a
+> little under a cool idle machine. Method + verbatim output:
+> [`assets/bench_2026-10-01/`](assets/bench_2026-10-01/README.md).
+
+| Decode tok/s (3 rounds) | SAPIENT | llama.cpp | Ollama | v0.5.3 table (SAPIENT vs llama.cpp) |
+|---|---:|---:|---:|---|
+| Qwen2.5-1.5B Q4_K_M — CPU | 41.6 / 44.2 / 44.7 | **60.4 / 63.5 / 63.4** | — | 40.6 vs 66.5 |
+| Qwen2.5-1.5B Q4_K_M — Metal | 72.3 / 74.7 / 76.0 | **78.9 / 77.4 / 74.9** | 73–78 | 82.2 vs 88.4 |
+| Llama-3.2-1B **Q8_0** — CPU | 47.6 / 50.8 / 43.9 | **54.3 / 53.6 / 54.2** | — | (not measured at this quant) |
+| Llama-3.2-1B **Q8_0** — Metal | **92.5 / 95.1 / 103.8**§ | 63.2 / 63.5 / 64.3 | 63–65 | (not measured at this quant) |
+
+§ Not a same-precision win: SAPIENT-Metal runs this Q8_0 file as MLX 4-bit while
+llama.cpp and Ollama run it at 8-bit.
+
+**What this run establishes**
+- The v0.5.3 Qwen ratios reproduce: CPU **1.43×** behind llama.cpp (table says
+  1.64×), Metal **0.96×** of llama.cpp (table says 0.93×).
+- On a same-file, same-quant basis SAPIENT-Metal and Ollama are level on Qwen-1.5B.
+  The "1.5× Ollama on the 1B" result in the v0.5.3 section is a 4-bit-vs-Q8_0
+  comparison (see §) and should not be read as an engine-speed win.
+- Not re-measured here: Llama-3.2-1B Q4_K_M (file not on the machine), TTFT, and
+  every Pi / Thor number.
 
 ---
 
@@ -18,7 +92,8 @@
 > with rests (cool-machine protocol; SAPIENT's CPU runs came *before*
 > llama.cpp's, so run order did not favor llama.cpp). Method: decode tok/s over
 > 128 generated tokens — llama.cpp = `llama-bench` tg128 (`-r 3`); SAPIENT =
-> `bench-llm` streamed generation (mean of 3 warm runs); Ollama =
+> `bench-llm` streamed generation (mean of 3 runs, tokens ÷ total time incl.
+> TTFT — the pre-2026-10 tool, see the method section above); Ollama =
 > `/api/generate` `eval_count/eval_duration` (mean of 3). Raw summary:
 > [`assets/bench_v053.json`](assets/bench_v053.json); charts regenerated with
 > `scripts/gen-benchmark-charts.py`.
@@ -45,9 +120,11 @@ TTFT.)
 - **llama.cpp is a moving target and moved.** b9860 measures faster than the
   build used in the v0.5.0/v0.5.1 sections below on the same files (Metal 1B
   101.3 → 111.3; CPU-4t 1B 78.7 → 83.1, 1.5B 62.5 → 66.5).
-- **Metal:** SAPIENT sits within **0.81–0.93×** of llama.cpp-Metal, beats
-  Ollama **1.5×** on the 1B (vs its default tag), roughly ties it on the 1.5B —
-  and keeps the **lowest TTFT of the three** (52–63 ms vs Ollama's ~130–150 ms).
+- **Metal:** SAPIENT sits within **0.81–0.93×** of llama.cpp-Metal and roughly
+  ties Ollama on the 1.5B. The 1.5× over Ollama on the 1B is against its Q8_0
+  default tag while SAPIENT-Metal runs 4-bit — not a like-for-like result. Warm
+  TTFT is 52–63 ms; Ollama's ~130–150 ms is a `total − eval` proxy that includes
+  its prompt-eval overhead, so the TTFT ranking is indicative, not exact.
 - **CPU:** the gap vs llama.cpp is **1.47× (1B) / 1.64× (1.5B)** this session —
   wider than the v0.5.1 cool-machine reference readings (1.13–1.35×) because
   llama.cpp improved and because sustained same-session benching runs warmer
@@ -79,7 +156,7 @@ a blocked W8A8 GEMM for m≫1 activations (the W8A8 path is per-row today) and
 resolution options. Decode at 15 tok/s makes the *reading* fast — it's the
 *looking* that needs the next rung.
 
-## Sparse MoE — Mixtral-8x7B on a Jetson (v0.5.x, pure Rust, zero CUDA)
+## Sparse MoE — Mixtral-8x7B on a Jetson (v0.5.x, CPU path, no CUDA)
 
 > Hardware: **NVIDIA Jetson AGX Thor · 14× Arm Neoverse · 122 GB · aarch64 Linux**.
 > Same GGUF file (`mixtral-8x7b-instruct-v0.1.Q4_K_M`, 24.6 GB), matched **14
@@ -123,6 +200,11 @@ Q4_K + Q6_K quant profile, cached on the same box):
 | Qwen dense decode, 14 threads | 26.68 | 84.45 | **3.16×** |
 | Qwen dense decode, **1 thread** | 3.60 | 6.97 | **1.94×** (kernel) |
 | Multicore scaling 1→14 | 7.4× (53%) | 12.1× (86%) | **1.6×** (threading) |
+
+(Build note: the Mixtral row uses llama.cpp `b1928` — January 2024, the last build
+that loads this per-expert file — while the Qwen rows use a current build. Part of
+the smaller MoE gap may simply be the older llama.cpp; the conclusion below is
+therefore suggestive, not proven.)
 
 The **dense gap (3.16×) is larger than the MoE gap (1.8×)** — so MoE is *not* the
 bottleneck; it's SAPIENT's relatively strong case, and a fused-MoE kernel would
@@ -389,24 +471,33 @@ pass remains conditional on per-op publish cost ever surfacing.
 Remaining parity items: deeper output tiling for prefill (llama.cpp pp512
 remains well ahead), and the Linux-side threadpool validation above.
 
-**The honest read:**
+**The honest read (as of v0.5.0, 2026-07-03 — superseded for CPU by the later
+entries above: the M4/Pi gap is now ~1.3–1.65×, Thor ~2.6×):**
 - On **Apple Metal** SAPIENT is competitive with llama.cpp (−7% on qwen-1.5B,
-  +2% on llama-1B) and **1.66× Ollama** on the 1B — with better TTFT.
-- On **CPU**, llama.cpp decodes ~1.8–3.8× faster than SAPIENT everywhere
+  +2% on llama-1B) and **1.66× Ollama** on the 1B (Ollama's 1B tag is Q8_0 —
+  not same-quant) — with better TTFT.
+- On **CPU** (v0.5.0), llama.cpp decoded ~1.8–3.8× faster than SAPIENT everywhere
   (Pi, M4, Grace). The ratio is consistent across machines → kernel-level gap
   (tiled GEMV, K-quant micro-kernels, weight repacking), now the top CPU work
   item. SAPIENT's own CPU path did jump up to 6.4× this release (embedding
   fix), but llama.cpp remains ahead.
-- The **wgpu path's value is capability, not crown**: the only engine running
-  fully-quantized models on any GPU vendor from one binary (VRAM ≈ file size,
-  Jetson with zero CUDA). On machines with strong CPUs it is not the fastest
+- The **wgpu path's value is capability, not crown**: one binary that keeps
+  Q8_0/Q4_K/Q6_K weights quantized on any GPU vendor (VRAM ≈ file size, Jetson
+  without CUDA). llama.cpp's Vulkan backend also dequantizes K-quants in-shader,
+  so this is parity in capability, not a unique feature. On machines with strong CPUs it is not the fastest
   option, and on Apple the `-metal` build is the right choice.
 - Thor-class Grace CPUs are decode monsters; the "Jetson via Vulkan" thesis
   (7b) is about weak-CPU Jetsons (Orin Nano class) — still unmeasured. The
   llama.cpp-CUDA gate comparison also remains open (no CUDA toolkit on the
   test device).
 
-## TL;DR
+## v0.3.5 report (historical — 2026-05-31)
+
+> Everything from here to "wgpu backend" is the original v0.3.5 report, kept as a
+> record. Its CPU numbers (11–20 tok/s) predate the embedding-gather fix and the
+> kernel ladder (CPU is now 40–57 tok/s on the same machine), and the "22 MB
+> binary" figure is the v0.3.5 size — v0.6.0 ships ~50 MB (CPU) and ~60 MB + an
+> 88 MB `mlx.metallib` (`-metal`). Do not quote this section as current.
 
 The v0.3.5 `MlxForwardEngine` puts SAPIENT's GPU path **ahead of Ollama on 0.5B
 decode, with the lowest time-to-first-token of any engine on 0.5B**, and within
@@ -473,8 +564,9 @@ Same binary, same GGUF weights, just `--backend metal`:
 
 ## Full comparison
 
-Decode throughput is measured **decode-only** — `generated_tokens ÷ (total_time −
-TTFT)`. TTFT is **steady-state** (warm engine, run 1 discarded). Prompt: a 58-token
+Decode throughput was described at the time as **decode-only** — `generated_tokens ÷ (total_time −
+TTFT)` (the `bench-llm` tool of that era computed tokens ÷ total time; see the
+method section at the top). TTFT is **steady-state** (warm engine, run 1 discarded). Prompt: a 58-token
 request for a 200-word backprop explanation; 200 tokens generated.
 
 ### Qwen2.5-0.5B (4-bit)
@@ -561,13 +653,15 @@ Q6_K covering v_proj + lm_head, a Q4_K_M GGUF loads **fully quantized**
 | Peak memory footprint | 14.66 GB | 5.36 GB | **3.59 GB** |
 | Peak RSS (one-shot chat) | 8.41 GB | 4.82 GB | **3.60 GB** |
 | Greedy output | *broken* — immediate EOS, empty reply (memory exhaustion on 16 GB) | correct ("Paris"), matches CPU | correct ("Paris"), matches CPU |
-| Decode | — (unusable) | 11.3 tok/s (≈ CPU 11.4) | **13.2 tok/s (1.13× CPU)** |
+| Decode | — (unusable) | 11.3 tok/s (≈ CPU 11.4 *at the time*) | **13.2 tok/s (1.13× the then-CPU path)** |
 | TTFT | — | 81 ms | **77 ms** (CPU 86 ms) |
 
 Two takeaways: quantized-resident weights are what make the wgpu path **fit and
 function at all** for 1.5B-class models on 16 GB machines, and with the lm_head
 read cut 6.5× (933 MB f32 → 196 MB Q6_K per token) the portable GPU path now
-**beats the heavily NEON-optimized M4 CPU** on the same binary. Discrete-card
+**beat the M4 CPU path as it stood then** (11.4 tok/s, before the embedding-gather
+fix and kernel ladder — the M4 CPU path now decodes this model at 40–50 tok/s, ~3× the
+wgpu path). Discrete-card
 numbers (Arc/AMD/Nvidia, where the bandwidth win is larger) are still open —
 Phase 7.6.
 
@@ -601,9 +695,13 @@ Decode, 64 tokens (same binary class, same models, same machine):
 
 | Model | CPU (14-core) | wgpu **quantized-resident** (PR) | wgpu **f32-upload** (main) |
 |---|---|---|---|
-| Qwen2.5-1.5B Q4_K_M | 2.2 tok/s, TTFT 475 ms | 9.8–10.0 tok/s, TTFT ~96 ms (**4.5× CPU**) | **19.6 tok/s**, TTFT 49 ms (8.9× CPU) |
+| Qwen2.5-1.5B Q4_K_M | 2.2 tok/s, TTFT 475 ms‖ | 9.8–10.0 tok/s, TTFT ~96 ms (4.5× the then-CPU path) | **19.6 tok/s**, TTFT 49 ms (8.9× the then-CPU path) |
 | SmolLM2-360M Q8_0 | 17.2 tok/s | 29.4 tok/s (1.71× CPU) | 32.5 tok/s |
 | Weights resident (1.5B) | — | **1062 MiB** | 6778 MiB |
+
+‖ The 2.2 tok/s CPU baseline predates the embedding-gather fix; the Thor CPU path
+now decodes this model at 22–33 tok/s (see the CPU sections above), i.e. **faster
+than either wgpu column**. The "× CPU" multiples in this table are historical.
 
 **Honest finding — the dequant kernels are ALU-bound on Nvidia.** The f32 path's
 19.6 tok/s sits almost exactly on the Thor's ~273 GB/s bandwidth roofline
@@ -626,9 +724,8 @@ Still wanted — **Intel Arc / AMD Radeon**:
 
 ```bash
 # Linux (needs Rust, python3, libvulkan1 + your GPU driver):
-git clone https://github.com/SkidGod4444/sapient && cd sapient
-git checkout feat/wgpu-q8-resident   # until the Phase 7 PR merges
-scripts/bench_gpu_7_6.sh             # writes bench-7_6-<gpu>.txt — attach it to PR #17
+git clone https://github.com/SkidGod4444/sapient && cd sapient   # Phase 7 is merged — use main
+scripts/bench_gpu_7_6.sh             # writes bench-7_6-<gpu>.txt — attach it to a new issue
 ```
 
 Windows (DX12): build with `cargo build --release -p sapient-cli --features wgpu`,
@@ -706,14 +803,15 @@ f16 rounding (~5e-4 relative), gated by `wgpu_f16_kv_cache_matches_f32_kv_cache`
 
 | Metric | SAPIENT | Ollama | mlx-lm |
 |---|---|---|---|
-| Distribution | single 22 MB binary | 28 MB + daemon | Python + venv |
+| Distribution | single binary (22 MB at v0.3.5; ~50 MB CPU / ~60 MB + 88 MB metallib at v0.6.0) | 28 MB + daemon | Python + venv |
 | Daemon required | **No** | `ollama serve` | No (library) |
 | Runtime deps | none (static) | none | Python 3.9+, MLX |
 | Works on Linux / ARM SBC | **Yes** (CPU/NEON) | Yes | No (Apple only) |
 | GPU backend | Metal (`--features mlx`) | Metal | Metal |
 
-SAPIENT is the only one of the three that is a single dependency-free binary *and*
-runs the same code on a Raspberry Pi (CPU/NEON) and an M-series Mac (Metal).
+SAPIENT needs no daemon and no Python, and the same binary family covers a
+Raspberry Pi (CPU/NEON) and an M-series Mac (Metal). (Ollama also runs on both; it
+needs its server process.)
 
 ---
 
@@ -755,7 +853,7 @@ python3 scripts/gen-benchmark-charts.py
 SAPIENT when you also want the lowest TTFT, a daemon-free single binary, or plan to
 ship the *same* tool to non-Apple hardware.
 
-**Raspberry Pi / ARM SBC / constrained edge:** SAPIENT, clearly — 22 MB static
+**Raspberry Pi / ARM SBC / constrained edge:** SAPIENT, clearly — one static
 binary, NEON kernels, mmap for bigger-than-RAM models, no Python, no daemon.
 
 **CI / scripting / embedded automation:** SAPIENT's direct-process model (no server
@@ -766,5 +864,5 @@ measured here and beats Ollama on 0.5B decode — a strong single-binary GPU opt
 
 ---
 
-> *Real measurements taken 2026-05-31 on Apple M4, 16 GB RAM, macOS 26.5 aarch64.*
+> *The v0.3.5 report sections were measured 2026-05-31 on Apple M4, 16 GB RAM, macOS 26.5 aarch64; later sections carry their own dates.*
 > *We publish the engines that beat us openly — credibility outlasts cherry-picking.*
