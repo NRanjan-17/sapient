@@ -2,11 +2,11 @@
   <h1>⚡ SAPIENT</h1>
   <p><strong>An edge inference engine written in Rust for language, vision, and speech models — one command to install, one line to run</strong></p>
   <p>
-    <a href="https://github.com/SkidGod4444/sapient/releases"><img src="https://img.shields.io/github/v/release/SkidGod4444/sapient" alt="Release"/></a>
+    <a href="https://github.com/openhorizon-labs/sapient/releases"><img src="https://img.shields.io/github/v/release/openhorizon-labs/sapient" alt="Release"/></a>
     <a href="https://github.com/SkidGod4444/sapient/actions"><img src="https://github.com/SkidGod4444/sapient/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20or%20commercial-blue" alt="License"/>
     <img src="https://img.shields.io/badge/rust-1.82%2B-orange" alt="MSRV"/>
-    <img src="https://img.shields.io/github/downloads/SkidGod4444/sapient/total" alt="Downloads"/>
+    <img src="https://img.shields.io/github/downloads/openhorizon-labs/sapient/total" alt="Downloads"/>
   </p>
   <p>
     <b>macOS · Linux · Windows</b> &nbsp;|&nbsp; No Python · No Docker · No CUDA required &nbsp;|&nbsp; <a href="https://sapient.openhorizon.so">sapient.openhorizon.so</a>
@@ -36,7 +36,7 @@ vision in one self-contained binary.
 ## Quick start
 
 ```bash
-curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 
 sapient chat qwen2.5-0.5b-q4                        # chat (downloads the model on first run)
 sapient transcribe whisper-base recording.wav       # speech → text
@@ -57,7 +57,7 @@ sapient serve                                       # OpenAI-compatible API on :
 ### macOS & Linux (one command)
 
 ```bash
-curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 ```
 
 > **Piped installs** go to `~/.local/bin`. If `sapient` is not found afterward, run:
@@ -66,7 +66,7 @@ curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/insta
 ### Windows (PowerShell)
 
 ```powershell
-irm https://github.com/SkidGod4444/sapient/releases/latest/download/install.ps1 | iex
+irm https://github.com/openhorizon-labs/sapient/releases/latest/download/install.ps1 | iex
 ```
 
 > **Automatic GPU detection.** On x86_64 Linux/Windows the installer detects whether you
@@ -79,7 +79,7 @@ irm https://github.com/SkidGod4444/sapient/releases/latest/download/install.ps1 
 <details>
 <summary><b>Direct download</b> — pre-built binaries per platform</summary>
 
-Grab a pre-built binary for your platform from the [**latest release**](https://github.com/SkidGod4444/sapient/releases/latest):
+Grab a pre-built binary for your platform from the [**latest release**](https://github.com/openhorizon-labs/sapient/releases/latest):
 
 | Platform | Binary |
 |---|---|
@@ -320,7 +320,7 @@ Xcode → *File → Add Package Dependencies* → paste
 `https://github.com/openhorizon-labs/sapient-swift` and pick a version — the
 XCFramework downloads automatically. (The same package ships as
 `sapient-swift.zip` on every
-[release](https://github.com/SkidGod4444/sapient/releases) for
+[release](https://github.com/openhorizon-labs/sapient/releases) for
 local/offline use.)
 
 ```swift

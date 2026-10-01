@@ -18,7 +18,7 @@ size, thermal behaviour, and the measured numbers.
 
 ```bash
 # One-command install (detects aarch64, grabs the native ARM binary):
-curl -fsSL https://github.com/SkidGod4444/sapient/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
 sapient models          # catalog
