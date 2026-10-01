@@ -628,15 +628,26 @@ fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
                     for (jl, orow) in oc.chunks_mut(m).enumerate() {
                         let j = j0 + jl;
                         let wrow = &w_blocks[j * row_bytes..(j + 1) * row_bytes];
-                        for (i, slot) in orow.iter_mut().enumerate() {
+                        // Four activation rows per pass through the weight
+                        // row (bit-identical to the single-row kernel — see
+                        // dot_q8_0_row_sdot_x4), then the < 4 remainder.
+                        let xi = |i: usize| &x_i8[i * k..(i + 1) * k];
+                        let xs = |i: usize| &x_scales[i * bpr..(i + 1) * bpr];
+                        let m4 = m / 4 * 4;
+                        for i in (0..m4).step_by(4) {
                             // SAFETY: dotprod verified above.
-                            *slot = unsafe {
-                                quant::dot_q8_0_row_sdot(
+                            let r = unsafe {
+                                quant::dot_q8_0_row_sdot_x4(
                                     wrow,
-                                    &x_i8[i * k..(i + 1) * k],
-                                    &x_scales[i * bpr..(i + 1) * bpr],
+                                    [xi(i), xi(i + 1), xi(i + 2), xi(i + 3)],
+                                    [xs(i), xs(i + 1), xs(i + 2), xs(i + 3)],
                                 )
                             };
+                            orow[i..i + 4].copy_from_slice(&r);
+                        }
+                        for (i, slot) in orow.iter_mut().enumerate().skip(m4) {
+                            // SAFETY: dotprod verified above.
+                            *slot = unsafe { quant::dot_q8_0_row_sdot(wrow, xi(i), xs(i)) };
                         }
                     }
                 });

@@ -83,6 +83,53 @@ llama.cpp and Ollama run it at 8-bit.
 
 ---
 
+## Vision tower — SmolVLM-256M image encode (2026-10-02)
+
+> `sapient see <image> --model smolvlm-256m`, one 512² image (1024 patches,
+> SigLIP-B/16, 12 layers, BF16 weights → online Q8_0, W8A8 SDOT path). Timing is
+> the CLI's `vision` stage; the per-stage split is `SAPIENT_VISION_TIMING=1`.
+> Same image and prompt every run; reply text checked byte-identical before/after.
+
+| Vision encode | before | after | change |
+|---|---:|---:|---:|
+| Apple M4, 10 threads | 1140 ms | **~670 ms** | −41% |
+| Apple M4, 4 threads (`RAYON_NUM_THREADS=4`) | 1410 ms | **~990 ms** | −30% |
+| Raspberry Pi 5, v0.5.2 release binary | 7.2–7.4 s | not re-measured | — |
+
+"Before" on the M4 is main at v0.6.0-level kernels (the 3.0 s in the
+vision-language table further down predates the blocked W8A8 GEMM). The Pi row is
+the only Pi vision measurement that exists, and it is on the old v0.5.2 binary —
+the new kernels have not been timed on a Pi.
+
+Three changes, all bit-identical (reply text, `vlm_e2e`, `vlm_geometry_probe` and
+a new kernel bit-identity test all pass):
+
+1. **Parallel element-wise map** (`unary_f32` ≥ 65k elements): the tower's GELU was
+   one single-threaded pass over 3M elements per layer — 255 → 40 ms.
+2. **Head split/merge fast path** (`permute` `[0,2,1,3]`): whole `head_dim` runs
+   copied instead of a per-element recursive walk — q/k/v stage 262 → 141 ms. The
+   LLM engines share this helper, so short-prompt prefill also dropped (110 → ~75 ms
+   for 77 tokens).
+3. **Four-activation-row SDOT tile** (`dot_q8_0_row_sdot_x4`): each Q8_0 weight
+   block is loaded and its scale decoded once for four patch rows — MLP linears
+   −15 to −18%.
+
+M4 stage split after (10 threads, ms): norm 26 · q/k/v 121 · attention 165 ·
+out_proj 40 · fc1 150 · GELU 40 · fc2 110.
+
+**Measured, not adopted:** a 4-wide NEON polynomial `exp` for the attention
+softmax (~150M exponentials per image) cut attention 765 → 546 ms single-thread
+but only ~5% of the tower at 10 threads, is not bit-identical, and flipped a
+greedy near-tie in the reply. It stays scalar until a quality gate exists.
+
+**Headroom:** the tower is ~107 G multiply-accumulates per image. Single-thread the
+M4 now runs it at ~40 G/s, a fraction of what `sdot` can do in principle — the
+per-32-block f32 scale combine is the same tail the Q8_K activation format removed
+from the K-quant kernels. That, plus better multi-thread scaling (1 → 10 threads is
+only ~4×), is the next rung.
+
+---
+
 ## v0.5.3 head-to-head refresh (Apple M4, 2026-07-09)
 
 > Hardware: **Apple M4 (MacBook Pro) · 16 GB · macOS 26.5 aarch64.** SAPIENT

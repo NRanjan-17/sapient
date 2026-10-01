@@ -179,11 +179,23 @@ impl SiglipVision {
         let mut x =
             Tensor::from_f32(&h, Shape::new([1, n_patch, c])).map_err(|e| anyhow!("{e}"))?;
 
+        // Per-stage wall-clock breakdown, printed under SAPIENT_VISION_TIMING
+        // (same idea as SAPIENT_KOKORO_TIMING): [norm, qkv, attn, out_proj, fc1, gelu, fc2].
+        let timing = std::env::var_os("SAPIENT_VISION_TIMING").is_some();
+        let mut st = [std::time::Duration::ZERO; 7];
+        let mut mark = std::time::Instant::now();
+        let mut lap = |i: usize, mark: &mut std::time::Instant| {
+            let now = std::time::Instant::now();
+            st[i] += now - *mark;
+            *mark = now;
+        };
+
         // ── 2. transformer blocks (pre-LN) ───────────────────────────────────
         for l in 0..self.cfg.layers {
             let p = format!("{}.encoder.layers.{l}", self.prefix);
             // attn
             let normed = self.layer_norm(&x, &format!("{p}.layer_norm1"))?;
+            lap(0, &mut mark);
             let q = split_heads(
                 &self.linear(&normed, &format!("{p}.self_attn.q_proj"))?,
                 self.cfg.heads,
@@ -199,16 +211,30 @@ impl SiglipVision {
                 self.cfg.heads,
                 self.head_dim,
             )?;
+            lap(1, &mut mark);
             let attn = dense_full_attention(&q, &k, &v, self.cfg.heads, self.head_dim)?;
             let attn = merge_heads(&attn)?;
+            lap(2, &mut mark);
             let attn = self.linear(&attn, &format!("{p}.self_attn.out_proj"))?;
             x = self.backend.add(&x, &attn).map_err(|e| anyhow!("{e}"))?;
+            lap(3, &mut mark);
             // mlp
             let normed = self.layer_norm(&x, &format!("{p}.layer_norm2"))?;
+            lap(0, &mut mark);
             let up = self.linear(&normed, &format!("{p}.mlp.fc1"))?;
+            lap(4, &mut mark);
             let up = gelu(&up).map_err(|e| anyhow!("{e}"))?; // gelu_pytorch_tanh
+            lap(5, &mut mark);
             let down = self.linear(&up, &format!("{p}.mlp.fc2"))?;
             x = self.backend.add(&x, &down).map_err(|e| anyhow!("{e}"))?;
+            lap(6, &mut mark);
+        }
+        if timing {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
+            eprintln!(
+                "[vision] {} patches · norm {:.0} · qkv {:.0} · attn {:.0} · out_proj {:.0} · fc1 {:.0} · gelu {:.0} · fc2 {:.0} ms",
+                n_patch, ms(st[0]), ms(st[1]), ms(st[2]), ms(st[3]), ms(st[4]), ms(st[5]), ms(st[6])
+            );
         }
         let x = self.layer_norm(&x, &format!("{}.post_layernorm", self.prefix))?;
         Ok(x.to_f32_vec())
@@ -290,6 +316,11 @@ fn dense_full_attention(
             let mut sv = scores.to_f32_vec();
 
             // Row-wise softmax (parallel over query rows).
+            // MEASURED, NOT ADOPTED (2026-10-02): a 4-wide NEON polynomial exp
+            // (~2e-7 rel. error) cut attention 765 → 546 ms single-thread and the
+            // whole tower ~5% at 10 threads on M4, but it is not bit-identical and
+            // flipped a greedy near-tie in the reply. Kept scalar until a quality
+            // gate exists to accept that class of change.
             sv.par_chunks_mut(seq).for_each(|row| {
                 let mut mx = f32::NEG_INFINITY;
                 for x in row.iter_mut() {

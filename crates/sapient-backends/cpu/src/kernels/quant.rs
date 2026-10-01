@@ -495,6 +495,61 @@ pub unsafe fn dot_q8_0_row_sdot(row_blocks: &[u8], x_i8: &[i8], x_scales: &[f32]
     acc
 }
 
+/// FOUR activation rows against one Q8_0 weight row (the m ≫ 1 GEMM tile for
+/// vision towers / prefill).
+///
+/// The single-row kernel's `acc += w_scale · x_scale · dot` is one serial f32
+/// add chain per (weight row, activation row) pair — latency-bound, with the
+/// `sdot`s idle behind it. Here each weight block is loaded and its f16 scale
+/// decoded ONCE, then applied to four activation rows: four independent add
+/// chains interleave in the pipeline. Per-pair arithmetic (expression and
+/// block order) is exactly [`dot_q8_0_row_sdot`]'s, so results are
+/// bit-identical to four single-row calls.
+///
+/// # Safety
+/// Same contract as [`dot_q8_0_row_sdot`], for each of the four rows.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,dotprod")]
+pub unsafe fn dot_q8_0_row_sdot_x4(
+    row_blocks: &[u8],
+    x_i8: [&[i8]; 4],
+    x_scales: [&[f32]; 4],
+) -> [f32; 4] {
+    use std::arch::aarch64::*;
+    let mut acc = [0.0f32; 4];
+    for (bi, block) in row_blocks.chunks_exact(Q8_0_BLOCK_BYTES).enumerate() {
+        let w_scale = half::f16::from_le_bytes([block[0], block[1]]).to_f32();
+        let w_ptr = block.as_ptr().add(2) as *const i8;
+        let w0 = vld1q_s8(w_ptr);
+        let w1 = vld1q_s8(w_ptr.add(16));
+        let x_off = bi * QK;
+        for r in 0..4 {
+            debug_assert!(x_i8[r].len() >= x_off + QK);
+            let x_ptr = x_i8[r].as_ptr().add(x_off);
+            let x0 = vld1q_s8(x_ptr);
+            let x1 = vld1q_s8(x_ptr.add(16));
+            let mut d = vdupq_n_s32(0i32);
+            core::arch::asm!(
+                "sdot {0:v}.4s, {1:v}.16b, {2:v}.16b",
+                inout(vreg) d,
+                in(vreg) w0,
+                in(vreg) x0,
+                options(nomem, nostack),
+            );
+            core::arch::asm!(
+                "sdot {0:v}.4s, {1:v}.16b, {2:v}.16b",
+                inout(vreg) d,
+                in(vreg) w1,
+                in(vreg) x1,
+                options(nomem, nostack),
+            );
+            let dot = vaddvq_s32(d);
+            acc[r] += w_scale * x_scales[r][bi] * dot as f32;
+        }
+    }
+    acc
+}
+
 /// Scalar fallback for dot_q8_0_row_sdot (non-dotprod aarch64 or other platforms).
 /// Uses i32 integer arithmetic — no widening chain, still faster than the f32 path
 /// for targets without AVX2, and correct everywhere. `x_scales` holds one scale
@@ -2988,6 +3043,46 @@ mod tests {
     // an outlier channel — a per-row scale (the old behavior) diverges wildly here
     // and produced garbage LLM output. We assert both: blockwise is accurate, and
     // a single per-row scale is demonstrably bad on the same data.
+    // The 4-activation-row tile must be BIT-identical to four single-row calls
+    // (same per-pair expression and block order) — this is what lets the blocked
+    // GEMM use it without changing any model's output.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn sdot_q8_0_row_x4_matches_single_row() {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            eprintln!("dotprod not available — skipping SDOT x4 test");
+            return;
+        }
+        let k = 768;
+        let wf: Vec<f32> = (0..k)
+            .map(|i| ((i * 37 % 101) as f32 - 50.0) * 0.011)
+            .collect();
+        let w_blocks = q8_0_weight_row(&wf);
+        let rows: Vec<(Vec<i8>, Vec<f32>)> = (0..4)
+            .map(|r| {
+                let mut xf: Vec<f32> = (0..k)
+                    .map(|i| ((i * (r + 3) * 13 % 97) as f32 - 48.0) * 0.07)
+                    .collect();
+                xf[(r * 191) % k] = 40.0; // per-row outlier in a different block
+                quantize_row_to_i8_blocks(&xf)
+            })
+            .collect();
+        let singles: Vec<f32> = rows
+            .iter()
+            .map(|(xi, xs)| unsafe { dot_q8_0_row_sdot(&w_blocks, xi, xs) })
+            .collect();
+        let x4 = unsafe {
+            dot_q8_0_row_sdot_x4(
+                &w_blocks,
+                [&rows[0].0, &rows[1].0, &rows[2].0, &rows[3].0],
+                [&rows[0].1, &rows[1].1, &rows[2].1, &rows[3].1],
+            )
+        };
+        for r in 0..4 {
+            assert_eq!(x4[r].to_bits(), singles[r].to_bits(), "row {r} differs");
+        }
+    }
+
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn sdot_q8_0_row_blockwise_survives_activation_outlier() {

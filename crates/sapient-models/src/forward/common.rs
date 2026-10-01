@@ -266,6 +266,23 @@ pub fn permute(x: &Tensor, order: &[usize]) -> Result<Tensor> {
     let src = x.as_f32_slice();
     let mut out = vec![0.0f32; src.len()];
 
+    // Fast path for the head split/merge (`[a, b, c, d]` → `[a, c, b, d]`):
+    // the innermost axis is untouched, so move whole `d`-length runs instead
+    // of recursing per element. Pure data movement — same values as below.
+    if order == [0, 2, 1, 3] {
+        let (a, b, c, d) = (dims[0], dims[1], dims[2], dims[3]);
+        for ai in 0..a {
+            for bi in 0..b {
+                for ci in 0..c {
+                    let s = ((ai * b + bi) * c + ci) * d;
+                    let t = ((ai * c + ci) * b + bi) * d;
+                    out[t..t + d].copy_from_slice(&src[s..s + d]);
+                }
+            }
+        }
+        return map_err(Tensor::from_f32_vec(out, Shape::new(new_dims)));
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn recurse(
         dims: &[usize],

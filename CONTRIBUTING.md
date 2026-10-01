@@ -359,6 +359,9 @@ personal hardware is a project rule, not a suggestion.
 
 ### Benchmarks
 
+Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
+per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`).
+
 **Publishing a performance number?** Use `sapient bench-llm <alias | file.gguf> --json`
 (decode-only tok/s, warm-up excluded, real peak RSS) and commit its raw JSON — plus the
 competing engine's raw output — under `docs/assets/bench_<date>/`. State the date,
