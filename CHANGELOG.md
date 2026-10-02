@@ -5,6 +5,15 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 📖 Paste-safe docs
+
+- The README's GPU benchmark block started with an interactive `sapient chat`, so
+  pasting it opened a chat and the benchmark only ran after `/exit`. It now uses a
+  one-shot `chat -p`. The same fix applies to Quick start, the SmolVLA serve + request
+  example (now two blocks: `serve` keeps running), the build-from-source steps and the
+  TypeScript/mobile SDK snippets. The CLI reference notes that its example lists run one
+  line at a time.
+
 ## [0.6.2] - 2026-10-02
 
 **Robot actions, a smaller binary, and faster GPU decode.** `sapient act` runs the

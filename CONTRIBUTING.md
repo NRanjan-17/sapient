@@ -408,7 +408,10 @@ shaders' `LANES`/`ROWS` were tuned on an Apple M4 only — report Vulkan/DX12 nu
 you change them.
 
 Shell examples in docs: never put a `# comment` after a command on the same line —
-zsh (the macOS default) passes it as arguments. Put comments on their own line.
+zsh (the macOS default) passes it as arguments. Put comments on their own line. In a
+block meant to be pasted and run in order, nothing may block before the last line —
+use `chat -p "…"` instead of an interactive `chat`, and put `serve`, `converse` and
+`stats` (which keep running) in their own block.
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
