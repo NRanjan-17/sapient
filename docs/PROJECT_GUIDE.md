@@ -492,6 +492,16 @@ returning `false` from it cancels generation. Internally a private tokio runtime
 same `Pipeline` the CLI uses (prefix cache on, so multi-turn chats skip re-prefilling
 history). Cross-compiles are validated for iOS device/simulator and Android arm64.
 
+For apps that need to know how a model performs on the actual phone, `LlmSession` also has
+`benchmark(options, listener)`: greedy timed runs on the loaded model returning decode and
+prefill tokens/s, time to first token and the process's peak memory, computed by the same
+code as `sapient bench-llm` (`sapient_generate::bench`). `memory_footprint_bytes()` and
+`available_memory_bytes()` report the number iOS enforces its per-app limit against and the
+remaining headroom. On iOS/Android the engine keeps memory down on its own: GGUF weights are
+memory-mapped, safetensors checkpoints are quantized one tensor at a time while loading, and
+models above 1.5B parameters get a 3072-token context instead of 8192
+(`GenerationOptions.context_length` overrides).
+
 Node.js and React Native use the **TypeScript SDK** (`sdks/typescript`, npm name
 `@openhorizon-labs/sapient`): a zero-dependency, transport-pluggable client. The default
 transport talks to `sapient serve` over its OpenAI-compatible API with streaming

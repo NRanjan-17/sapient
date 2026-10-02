@@ -31,16 +31,39 @@ pub struct SafetensorsLoader;
 
 impl SafetensorsLoader {
     pub fn load(path: &Path) -> Result<HashMap<String, Tensor>> {
+        Self::load_map(path, |_, t| t)
+    }
+
+    /// Like [`load`](Self::load), but passes every tensor through `transform`
+    /// as soon as it is read, before the next one is copied out of the file.
+    ///
+    /// The file is memory-mapped, so peak memory is the transformed tensors
+    /// plus one tensor in its stored form, instead of the whole checkpoint.
+    /// This is how a 3.4 GB BF16 checkpoint can be quantized to ~1.8 GB of
+    /// Q8_0 inside a phone's ~3.4 GB per-app limit.
+    pub fn load_map<F>(path: &Path, transform: F) -> Result<HashMap<String, Tensor>>
+    where
+        F: FnMut(&str, Tensor) -> Tensor,
+    {
         let file = std::fs::File::open(path)
             .map_err(|e| SapientError::ModelNotFound(format!("{}: {e}", path.display())))?;
         // SAFETY: we don't mutate the mmap and hold it for the duration.
         let mmap = unsafe {
             Mmap::map(&file).map_err(|e| SapientError::SafetensorsParseError(e.to_string()))?
         };
-        Self::from_bytes(&mmap)
+        Self::from_bytes_map(&mmap, transform)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<HashMap<String, Tensor>> {
+        Self::from_bytes_map(bytes, |_, t| t)
+    }
+
+    /// [`from_bytes`](Self::from_bytes) with a per-tensor `transform`; see
+    /// [`load_map`](Self::load_map).
+    pub fn from_bytes_map<F>(bytes: &[u8], mut transform: F) -> Result<HashMap<String, Tensor>>
+    where
+        F: FnMut(&str, Tensor) -> Tensor,
+    {
         if bytes.len() < 8 {
             return Err(SapientError::SafetensorsParseError("file too short".into()));
         }
@@ -126,7 +149,7 @@ impl SafetensorsLoader {
                 }
             };
 
-            tensors.insert(name.clone(), tensor);
+            tensors.insert(name.clone(), transform(name, tensor));
         }
 
         Ok(tensors)

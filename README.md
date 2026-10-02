@@ -385,8 +385,14 @@ iOS/macOS, Vulkan on Android; probed at load, CPU fallback) and
 threads as the phone heats — MOBILE.md §6–7). One object API, generated from
 the [`sapient-ffi`](crates/sapient-ffi) crate via UniFFI:
 `LlmSession.load(model, options)` → `chat(...)` / `chatStream(..., listener)`
-(token callback; return `false` to cancel) / `reset()`. Full guide, including
-the **safe-testing ladder for personal devices**:
+(token callback; return `false` to cancel) / `reset()`, plus
+**`benchmark(...)`** for on-device tok/s, TTFT and peak memory (same
+definitions as `sapient bench-llm`) and memory readings
+(`memoryFootprintBytes()`, `availableMemoryBytes()`). On phones the engine
+memory-maps GGUF weights, quantizes safetensors checkpoints tensor-by-tensor
+while loading, and allocates a 3072-token context for models above 1.5B, to
+stay inside the per-app memory limit. Full guide, including the
+**safe-testing ladder for personal devices**:
 [`docs/MOBILE.md`](docs/MOBILE.md).
 
 <table>

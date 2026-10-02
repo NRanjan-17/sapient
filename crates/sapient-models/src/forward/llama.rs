@@ -15,7 +15,7 @@ use super::common::{
     split_heads,
 };
 use crate::weights::{
-    detect_weight_prefix, load_hf_weights, resolve_bias, resolve_lm_head, resolve_weight,
+    detect_weight_prefix, load_hf_weights_quantized, resolve_bias, resolve_lm_head, resolve_weight,
     tie_word_embeddings_from_config,
 };
 
@@ -133,7 +133,7 @@ impl LlamaForward {
         weight_paths: &[std::path::PathBuf],
         backend: LlmBackendKind,
     ) -> Result<Self> {
-        let weights = load_hf_weights(weight_paths)?;
+        let weights = load_hf_weights_quantized(weight_paths)?;
         Self::from_weights_with_backend(info, weights, backend)
     }
 
@@ -224,7 +224,7 @@ impl LlamaForward {
         // Cap the pre-allocated cache window so 128K-context models don't reserve
         // (and OOM on) gigabytes of KV cache at load time. Longer conversations
         // slide the window. Override with SAPIENT_CTX.
-        let max_seq = super::common::kv_cache_ctx(info.max_position_embeddings);
+        let max_seq = super::common::kv_cache_ctx_for(&info);
         let n_kv = info.num_key_value_heads;
         let hd = info.head_dim;
         let cache_shape = vec![1, n_kv, max_seq, hd];

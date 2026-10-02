@@ -21,8 +21,7 @@ use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use sapient_generate::{
     detect_devices, mac_gpu_support, recommend_backend, GenerationBackend, LoadOptions, Pipeline,
-    SamplingStrategy, SpeakPipeline, SpeculativePipeline, TranscribeOptions, TranscribePipeline,
-    ORPHEUS_VOICES,
+    SpeakPipeline, SpeculativePipeline, TranscribeOptions, TranscribePipeline, ORPHEUS_VOICES,
 };
 use sapient_hub::LoadOptions as HubLoadOptions;
 use sapient_runtime::{InferenceSession, Model, ModelConfig, SessionOptions};
@@ -3082,66 +3081,17 @@ async fn eval_ppl_command(
     Ok(())
 }
 
-/// One timed bench-llm generation.
-struct BenchSample {
-    ttft_ms: u64,
-    elapsed_ms: u64,
-    tokens: usize,
-    /// Decode-only throughput: `(tokens − 1) / (t_last − t_first)` — prefill
-    /// and TTFT are excluded.
-    decode_tps: f64,
-    /// Generation ended on EOS before reaching `--max-tokens`.
-    hit_eos: bool,
-}
-
-/// Greedy generation of up to `max_tokens` tokens, timestamping every token as
-/// the engine produces it (exact token count — no re-tokenization of the reply).
+/// One timed bench-llm generation (shared with the FFI benchmark, so the CLI
+/// and the mobile SDKs report identical definitions).
 fn bench_llm_generate(
     pipeline: &Pipeline,
     prompt_ids: &[u32],
     eos_ids: &[u32],
     max_tokens: usize,
-) -> Result<BenchSample> {
-    let mut stamps: Vec<Instant> = Vec::with_capacity(max_tokens);
-    let start = Instant::now();
+) -> Result<sapient_generate::bench::BenchSample> {
     // The engine runs synchronously on this thread; keep the runtime healthy.
     tokio::task::block_in_place(|| {
-        pipeline.generate_token_ids_streaming(
-            prompt_ids,
-            max_tokens,
-            eos_ids,
-            SamplingStrategy::Greedy,
-            |_| {
-                stamps.push(Instant::now());
-                true
-            },
-        )
-    })?;
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    let tokens = stamps.len();
-    let ttft_ms = stamps
-        .first()
-        .map(|t| t.duration_since(start).as_millis() as u64)
-        .unwrap_or(0);
-    let decode_tps = match (stamps.first(), stamps.last()) {
-        (Some(first), Some(last)) if tokens >= 2 => {
-            let span = last.duration_since(*first).as_secs_f64();
-            if span > 0.0 {
-                (tokens - 1) as f64 / span
-            } else {
-                0.0
-            }
-        }
-        _ => 0.0,
-    };
-
-    Ok(BenchSample {
-        ttft_ms,
-        elapsed_ms,
-        tokens,
-        decode_tps,
-        hit_eos: tokens < max_tokens,
+        sapient_generate::bench::bench_generate(pipeline, prompt_ids, eos_ids, max_tokens)
     })
 }
 

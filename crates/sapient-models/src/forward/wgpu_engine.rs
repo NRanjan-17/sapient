@@ -30,7 +30,7 @@ use sapient_hub::model_info::{ArchType, ModelInfo};
 
 use crate::weights::{detect_weight_prefix, resolve_bias, resolve_lm_head, resolve_weight};
 
-use super::common::{kv_cache_ctx, quantize_tensor_to_q8_0, should_quantize_online};
+use super::common::{kv_cache_ctx_for, quantize_tensor_to_q8_0, should_quantize_online};
 
 /// An f32 KV cache is 4× a Q8_0 cache, so the f32 fallback stays capped more
 /// conservatively than the CPU engine's 8192 to avoid OOMing modest GPUs at load.
@@ -181,7 +181,7 @@ impl WgpuForwardEngine {
     /// the CPU's f32 cache).
     pub fn from_weights_with_kv(
         info: ModelInfo,
-        weights: HashMap<String, Tensor>,
+        mut weights: HashMap<String, Tensor>,
         kv_f16: Option<bool>,
     ) -> Result<Self> {
         if !matches!(
@@ -223,9 +223,9 @@ impl WgpuForwardEngine {
         // f16 halves the per-position bytes, so it keeps the full default context;
         // the f32 fallback stays capped to bound the footprint on modest GPUs.
         let max_seq = if kv_f16 {
-            kv_cache_ctx(info.max_position_embeddings)
+            kv_cache_ctx_for(&info)
         } else {
-            kv_cache_ctx(info.max_position_embeddings).min(WGPU_MAX_CTX_F32)
+            kv_cache_ctx_for(&info).min(WGPU_MAX_CTX_F32)
         };
 
         let embed_t = weights
@@ -292,6 +292,13 @@ impl WgpuForwardEngine {
                     ctx.alloc_f32(n_kv * max_seq * head_dim, "vcache")
                 },
             });
+            // The layer now lives on the GPU: free its host copy before the
+            // next one uploads, so host + device never hold the whole model
+            // at once (on unified memory both count toward a phone's per-app
+            // limit). Only this layer's keys go; the embedding stays because
+            // a tied lm_head was resolved from it above.
+            let layer_prefix = format!("{prefix}{pfx}.");
+            weights.retain(|k, _| !k.starts_with(&layer_prefix));
         }
 
         let (mut weight_bytes, mut quant_matrices, mut total_matrices) = (0usize, 0usize, 0usize);

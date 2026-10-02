@@ -40,7 +40,7 @@ use sapient_hub::model_info::ModelInfo;
 
 use super::backend::{LlmBackend, LlmBackendDispatch, LlmBackendKind};
 use super::common::{
-    embed_tokens, kv_cache_ctx, merge_heads, quantize_tensor_to_q8_0, should_quantize_online,
+    embed_tokens, kv_cache_ctx_for, merge_heads, quantize_tensor_to_q8_0, should_quantize_online,
     split_heads,
 };
 
@@ -138,7 +138,7 @@ impl Gemma3Forward {
             })
             .collect();
 
-        let max_seq = kv_cache_ctx(info.max_position_embeddings);
+        let max_seq = kv_cache_ctx_for(&info);
         let layers = info.num_hidden_layers;
         Ok(Self {
             info,

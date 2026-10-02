@@ -83,54 +83,23 @@ pub struct LoadOptions {
     /// When `false` (default), mmap is enabled automatically when the GGUF file
     /// is larger than ~80% of available free RAM.
     pub force_mmap: bool,
+    /// KV-cache context window to allocate, in tokens. `None` keeps the
+    /// engine default (8192, or 3072 for models above 1.5B on iOS/Android;
+    /// see `sapient_models::forward::common::kv_cache_ctx_for`). Never
+    /// exceeds what the model supports.
+    pub context_length: Option<usize>,
 }
 
-/// Available physical RAM in bytes. Returns 0 if detection fails (treated as
-/// "unknown" — auto-mmap won't be triggered, but `--mmap` flag still works).
+/// Phones always memory-map GGUF weights. Their apps run under a per-process
+/// memory limit (~3.4 GB on a 6–8 GB iPhone) that counts heap copies but not
+/// clean mapped file pages, and the heap loader peaks at ~2x the file size.
+const MMAP_GGUF_ALWAYS: bool = cfg!(any(target_os = "ios", target_os = "android"));
+
+/// Available memory in bytes (see [`crate::memory::available_bytes`]).
+/// Returns 0 if unknown — auto-mmap is then not triggered, but `--mmap`
+/// and the phone default still apply.
 fn available_ram_bytes() -> u64 {
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(info) = std::fs::read_to_string("/proc/meminfo") {
-            for line in info.lines() {
-                if let Some(rest) = line.strip_prefix("MemAvailable:") {
-                    if let Ok(kb) = rest.trim().trim_end_matches(" kB").trim().parse::<u64>() {
-                        return kb * 1024;
-                    }
-                }
-            }
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let page_size: u64 = std::process::Command::new("sysctl")
-            .args(["-n", "hw.pagesize"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(16384);
-
-        let free_pages: u64 = std::process::Command::new("sysctl")
-            .args(["-n", "vm.page_free_count"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
-
-        let inactive: u64 = std::process::Command::new("sysctl")
-            .args(["-n", "vm.page_inactive_count"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
-
-        if free_pages > 0 || inactive > 0 {
-            return (free_pages + inactive) * page_size;
-        }
-    }
-    0
+    crate::memory::available_bytes().unwrap_or(0)
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
@@ -197,12 +166,18 @@ impl Pipeline {
                 .iter()
                 .all(|p| p.extension().and_then(|e| e.to_str()) == Some("gguf"));
         if is_gguf {
-            return Self::from_gguf_opts(&model_files.weight_paths[0], backend, opts.force_mmap)
-                .await;
+            return Self::from_gguf_opts(
+                &model_files.weight_paths[0],
+                backend,
+                opts.force_mmap,
+                opts.context_length,
+            )
+            .await;
         }
 
-        let model_info = ModelInfo::from_config_file(&model_files.config_path)
+        let mut model_info = ModelInfo::from_config_file(&model_files.config_path)
             .context("Failed to parse config.json")?;
+        model_info.kv_ctx_cap = opts.context_length;
         debug!("Detected architecture: {:?}", model_info.arch);
 
         if model_info.raw.get("vision_config").is_some() {
@@ -306,7 +281,7 @@ impl Pipeline {
         path: impl Into<PathBuf>,
         backend: LlmBackendKind,
     ) -> Result<Self> {
-        Self::from_gguf_opts(path, backend, false).await
+        Self::from_gguf_opts(path, backend, false, None).await
     }
 
     /// Load a GGUF model with memory-mapping forced on (for bigger-than-RAM models).
@@ -314,13 +289,14 @@ impl Pipeline {
         path: impl Into<PathBuf>,
         backend: LlmBackendKind,
     ) -> Result<Self> {
-        Self::from_gguf_opts(path, backend, true).await
+        Self::from_gguf_opts(path, backend, true, None).await
     }
 
     async fn from_gguf_opts(
         path: impl Into<PathBuf>,
         backend: LlmBackendKind,
         force_mmap: bool,
+        context_length: Option<usize>,
     ) -> Result<Self> {
         let path = path.into();
         debug!("Loading GGUF: {}", path.display());
@@ -332,8 +308,9 @@ impl Pipeline {
             .with_context(|| format!("failed to parse GGUF header: {}", path.display()))?;
 
         // Build ModelInfo from GGUF KV metadata (no config.json needed).
-        let model_info = ModelInfo::from_gguf_metadata(&metadata)
+        let mut model_info = ModelInfo::from_gguf_metadata(&metadata)
             .context("failed to build ModelInfo from GGUF metadata")?;
+        model_info.kv_ctx_cap = context_length;
 
         // Decide loading strategy: mmap if forced, for MoE models, or if the file
         // won't fit in free RAM. MoE models are large (the "big models on edge"
@@ -343,8 +320,10 @@ impl Pipeline {
         // repack, which measured *slower* for m=1 MoE decode.
         let file_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         let avail = available_ram_bytes();
-        let use_mmap =
-            force_mmap || model_info.is_moe() || (avail > 0 && file_bytes > avail * 4 / 5);
+        let use_mmap = force_mmap
+            || MMAP_GGUF_ALWAYS
+            || model_info.is_moe()
+            || (avail > 0 && file_bytes > avail * 4 / 5);
 
         if use_mmap {
             debug!(
@@ -681,6 +660,7 @@ impl Pipeline {
         let tok = Arc::clone(&self.tokenizer);
         let engine = Arc::clone(&self.engine);
         let truncated = Arc::clone(&self.last_truncated);
+        let last_prompt = Arc::clone(&self.last_prompt);
 
         tokio::task::spawn_blocking(move || {
             // Reuse the already-loaded engine instead of rebuilding it — re-loading
@@ -703,6 +683,11 @@ impl Pipeline {
             let mut clean_stop = false;
 
             engine.reset_cache();
+            // The cache no longer holds the recorded prefix (see forget_cached_prefix).
+            last_prompt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             for step in 0..max_new {
                 let chunk = if step == 0 {
                     all_tokens.clone()
@@ -884,6 +869,18 @@ impl Pipeline {
         }
     }
 
+    /// Call after any reset/overwrite of the KV cache that does not record
+    /// what it now holds. Otherwise the next prefix-cached chat turn matches
+    /// its tokens against the OLD prompt and `truncate_cache` keeps positions
+    /// that now hold different tokens' KV (e.g. a benchmark run or a raw
+    /// completion between two chat turns), which corrupts the reply.
+    fn forget_cached_prefix(&self) {
+        self.last_prompt
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
     /// True when the most recent reply stopped at the `max_new_tokens` cap
     /// instead of a clean EOS/stop-sequence — i.e. it was cut off mid-thought.
     /// The chat CLI surfaces this so truncation is never silent.
@@ -919,6 +916,14 @@ impl Pipeline {
     /// True when weights are memory-mapped from disk (OS pages on demand).
     pub fn is_mmap(&self) -> bool {
         self.mmap
+    }
+
+    /// KV-cache context window the engine allocated, in tokens: how much
+    /// conversation the model sees before the oldest positions slide out.
+    /// (The wgpu engine's f32-cache fallback, used only for odd head sizes,
+    /// caps this further at 4096.)
+    pub fn context_length(&self) -> usize {
+        sapient_models::forward::common::kv_cache_ctx_for(&self.model_info)
     }
 
     /// Enable prompt/prefix KV caching: generation reuses the KV cache for the
@@ -964,6 +969,7 @@ impl Pipeline {
         if let Ok(mut engine) = self.engine.lock() {
             engine.reset_cache();
         }
+        self.forget_cached_prefix();
     }
 
     /// The configured generation backend kind (CPU / Metal / Auto).
@@ -1039,6 +1045,7 @@ impl Pipeline {
         let mut all = prompt_ids.to_vec();
 
         engine.reset_cache();
+        self.forget_cached_prefix();
         for step in 0..max_new {
             let chunk: Vec<u32> = if step == 0 {
                 all.clone()

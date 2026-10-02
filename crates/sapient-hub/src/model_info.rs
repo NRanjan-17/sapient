@@ -213,6 +213,13 @@ pub struct ModelInfo {
     #[serde(default)]
     pub moe: Option<MoeConfig>,
 
+    /// KV-cache context window requested by the caller at load time
+    /// (`LoadOptions::context_length`). `None` = the engine default, see
+    /// `sapient_models::forward::common::kv_cache_ctx_for`. A load-time
+    /// setting, not part of the model's config, so never serialized.
+    #[serde(skip)]
+    pub kv_ctx_cap: Option<usize>,
+
     // Raw config (for any fields we don't explicitly parse)
     #[serde(skip)]
     pub raw: serde_json::Value,
@@ -222,6 +229,26 @@ impl ModelInfo {
     /// True when this is a Mixture-of-Experts model (has a router + experts).
     pub fn is_moe(&self) -> bool {
         self.moe.is_some()
+    }
+
+    /// Estimated parameter count excluding the token embedding and output
+    /// projection: attention q/k/v/o plus a gated MLP (gate/up/down) per layer.
+    /// MoE layers count one expert, so this is a dense-equivalent size.
+    ///
+    /// Excluding the embedding keeps the estimate close to how models are
+    /// labelled: Qwen2.5-1.5B is ~1.31B here (its 151k-token vocabulary adds
+    /// ~0.23B), SmolLM2-1.7B ~1.61B.
+    pub fn non_embedding_params(&self) -> u64 {
+        let hidden = self.hidden_size as u64;
+        let q_dim = (self.num_attention_heads * self.head_dim) as u64;
+        let kv_dim = (self.num_key_value_heads * self.head_dim) as u64;
+        let ffn =
+            self.moe
+                .as_ref()
+                .map_or(self.intermediate_size, |m| m.expert_intermediate_size) as u64;
+        let attention = 2 * hidden * q_dim + 2 * hidden * kv_dim;
+        let mlp = 3 * hidden * ffn;
+        self.num_hidden_layers as u64 * (attention + mlp)
     }
 }
 
@@ -347,6 +374,7 @@ impl ModelInfo {
             partial_rotary_factor,
             head_dim,
             moe,
+            kv_ctx_cap: None,
             raw: serde_json::Value::Null,
         })
     }
@@ -415,6 +443,7 @@ impl ModelInfo {
             partial_rotary_factor,
             head_dim,
             moe,
+            kv_ctx_cap: None,
             raw: raw.clone(),
         })
     }
@@ -547,6 +576,32 @@ mod tests {
         assert_eq!(info.arch, ArchType::Llama);
         assert_eq!(info.num_key_value_heads, 8); // GQA
         assert_eq!(info.head_dim, 128); // 4096 / 32
+        assert_eq!(info.kv_ctx_cap, None);
+    }
+
+    /// The real configs of the two models either side of the mobile 1.5B
+    /// threshold: SmolLM2-1.7B must land above it, Qwen2.5-1.5B (labelled
+    /// 1.5B, most of its extra size is a 151k-token embedding) below it.
+    #[test]
+    fn non_embedding_params_matches_published_sizes() {
+        let smollm2_1_7b = ModelInfo::from_json_str(
+            r#"{"architectures": ["LlamaForCausalLM"], "model_type": "llama",
+                "vocab_size": 49152, "hidden_size": 2048, "num_hidden_layers": 24,
+                "num_attention_heads": 32, "num_key_value_heads": 32,
+                "intermediate_size": 8192, "max_position_embeddings": 8192}"#,
+        )
+        .unwrap();
+        let qwen2_5_1_5b = ModelInfo::from_json_str(
+            r#"{"architectures": ["Qwen2ForCausalLM"], "model_type": "qwen2",
+                "vocab_size": 151936, "hidden_size": 1536, "num_hidden_layers": 28,
+                "num_attention_heads": 12, "num_key_value_heads": 2,
+                "intermediate_size": 8960, "max_position_embeddings": 32768}"#,
+        )
+        .unwrap();
+        // 24 × (4·2048² + 3·2048·8192) = 1_610_612_736
+        assert_eq!(smollm2_1_7b.non_embedding_params(), 1_610_612_736);
+        // 28 × (2·1536² + 2·1536·256 + 3·1536·8960) = 1_310_195_712
+        assert_eq!(qwen2_5_1_5b.non_embedding_params(), 1_310_195_712);
     }
 
     #[test]

@@ -1151,6 +1151,19 @@ run-to-run spread) without knowing the machine or the rate in advance.
 
 ---
 
+## On-device benchmark API (2026-10-02)
+
+`LlmSession.benchmark(...)` in the Swift/Kotlin/RN SDKs (sapient-ffi) runs the
+same per-run code as `sapient bench-llm` (`sapient_generate::bench`, moved out
+of the CLI; the CLI's JSON is unchanged): greedy, chat-templated prompt, KV
+cache cleared per run, decode tok/s = `(tokens − 1) / (t_last − t_first)`,
+warm-up runs excluded. Two differences to keep in mind when comparing with
+CLI numbers: memory is the OS **footprint** (`phys_footprint` on Apple —
+what the iOS limit is enforced against — RSS on Linux/Android), not
+`ru_maxrss`; and the report adds prefill tok/s = `prompt_tokens / TTFT`, which
+includes the first decode step and therefore slightly under-states prefill.
+No device numbers are recorded yet; add a dated section when there are.
+
 ## wgpu on Apple Silicon: teammate report and fixes (2026-10-02)
 
 A teammate's run of `scripts/bench_wgpu.py` on an Apple M5 showed wgpu at 0.69× the CPU

@@ -85,6 +85,7 @@ fn tiny_q4_k_llama() -> (ModelInfo, HashMap<String, Tensor>) {
         partial_rotary_factor: 1.0,
         head_dim,
         moe: None,
+        kv_ctx_cap: None,
         raw: serde_json::Value::Null,
     };
 

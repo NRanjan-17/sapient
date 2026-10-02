@@ -203,6 +203,33 @@ pub fn thermal_level() -> ThermalLevel {
     }
 }
 
+// ── Memory ───────────────────────────────────────────────────────────────────
+
+/// This process's current memory footprint in bytes. On iOS this is the
+/// `phys_footprint` value the OS compares against the app's memory limit
+/// (what Xcode's memory gauge shows): heap and GPU allocations count,
+/// memory-mapped model weights do not. `None` if the platform doesn't report it.
+#[uniffi::export]
+pub fn memory_footprint_bytes() -> Option<u64> {
+    sapient_generate::memory::footprint_bytes()
+}
+
+/// Highest footprint this process has reached, in bytes (includes the model
+/// load peak). `None` if unknown.
+#[uniffi::export]
+pub fn peak_memory_footprint_bytes() -> Option<u64> {
+    sapient_generate::memory::peak_footprint_bytes()
+}
+
+/// Bytes this process can still allocate before the OS steps in: on iOS the
+/// remaining per-app allowance (`os_proc_available_memory`), elsewhere the
+/// available system memory. `None` if unknown (e.g. the iOS simulator, which
+/// enforces no limit). Check it before loading a large model.
+#[uniffi::export]
+pub fn available_memory_bytes() -> Option<u64> {
+    sapient_generate::memory::available_bytes()
+}
+
 // ── Generation options ────────────────────────────────────────────────────────
 
 /// Options for creating an [`LlmSession`]. All fields have defaults, so
@@ -228,10 +255,15 @@ pub struct GenerationOptions {
     /// Optional system prompt seeded at the start of the conversation.
     #[uniffi(default = None)]
     pub system_prompt: Option<String>,
-    /// Backend override: `auto` (default), `cpu`, `metal`, `wgpu`. Mobile
-    /// static libs are CPU-only today, so `auto` resolves to CPU there.
+    /// Backend override: `auto` (default), `cpu`, `metal`, `wgpu`. `auto`
+    /// uses the GPU when the library was built with it and one is present.
     #[uniffi(default = None)]
     pub backend: Option<String>,
+    /// Conversation window to allocate, in tokens (the KV cache). Unset =
+    /// 8192, or 3072 for models above 1.5B parameters on iOS/Android to stay
+    /// inside the per-app memory limit. Capped at what the model supports.
+    #[uniffi(default = None)]
+    pub context_length: Option<u32>,
 }
 
 impl Default for GenerationOptions {
@@ -244,6 +276,7 @@ impl Default for GenerationOptions {
             repetition_penalty: None,
             system_prompt: None,
             backend: None,
+            context_length: None,
         }
     }
 }
@@ -321,6 +354,8 @@ pub struct LlmSession {
     system_prompt: Option<String>,
     config: GenerationConfig,
     model: String,
+    /// Wall time of `load` (download + engine build), in milliseconds.
+    load_time_ms: u64,
 }
 
 impl LlmSession {
@@ -361,9 +396,11 @@ impl LlmSession {
         let load_opts = LoadOptions {
             generation: config.clone(),
             backend: options.backend_kind()?,
+            context_length: options.context_length.map(|n| n as usize),
             ..LoadOptions::default()
         };
         let alias = model.clone();
+        let started = std::time::Instant::now();
         let mut pipeline =
             run_async(async move { Pipeline::from_pretrained_with_opts(&alias, load_opts).await })
                 .map_err(|e| SapientError::Load {
@@ -378,6 +415,7 @@ impl LlmSession {
             system_prompt: options.system_prompt,
             config,
             model,
+            load_time_ms: started.elapsed().as_millis() as u64,
         }))
     }
 
@@ -474,6 +512,16 @@ impl LlmSession {
     /// Whether the weights are memory-mapped (RSS ≈ working set, not file size).
     pub fn is_mmap(&self) -> bool {
         self.pipeline.is_mmap()
+    }
+
+    /// How long `load` took (download included on first use), in milliseconds.
+    pub fn load_time_ms(&self) -> u64 {
+        self.load_time_ms
+    }
+
+    /// The conversation window the engine allocated, in tokens.
+    pub fn context_length(&self) -> u32 {
+        self.pipeline.context_length() as u32
     }
 }
 
@@ -591,6 +639,226 @@ impl LlmSession {
     }
 }
 
+// ── Benchmark ────────────────────────────────────────────────────────────────
+
+/// Settings for [`LlmSession::benchmark`]. Defaults match `sapient bench-llm`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BenchmarkOptions {
+    /// User message to answer; it is chat-templated like a normal turn. Ask
+    /// for a long answer so runs reach `max_tokens` (see `hit_eos`).
+    #[uniffi(
+        default = "Write a detailed explanation of how a CPU executes a program, step by step."
+    )]
+    pub prompt: String,
+    /// Tokens to generate per run.
+    #[uniffi(default = 128)]
+    pub max_tokens: u32,
+    /// Measured runs (summarized).
+    #[uniffi(default = 3)]
+    pub runs: u32,
+    /// Warm-up runs before measuring (reported, never summarized).
+    #[uniffi(default = 1)]
+    pub warmup: u32,
+}
+
+impl Default for BenchmarkOptions {
+    fn default() -> Self {
+        Self {
+            prompt: "Write a detailed explanation of how a CPU executes a program, step by step."
+                .into(),
+            max_tokens: 128,
+            runs: 3,
+            warmup: 1,
+        }
+    }
+}
+
+/// One timed generation.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BenchmarkRun {
+    /// 1-based index within its group (warm-up or measured).
+    pub index: u32,
+    /// Warm-up runs are excluded from the summary.
+    pub warmup: bool,
+    /// Prompt prefill + first token, in milliseconds.
+    pub ttft_ms: u64,
+    /// Whole run, in milliseconds.
+    pub elapsed_ms: u64,
+    /// Tokens generated (exact engine count).
+    pub tokens: u32,
+    /// Decode-only rate: `(tokens − 1) / (t_last − t_first)`.
+    pub decode_tokens_per_sec: f64,
+    /// `prompt_tokens / TTFT`.
+    pub prefill_tokens_per_sec: f64,
+    /// Ended on end-of-turn before `max_tokens`, so its rate covers fewer tokens.
+    pub hit_eos: bool,
+    /// Process memory footprint right after this run, in bytes, if known.
+    pub footprint_bytes: Option<u64>,
+}
+
+/// Everything [`LlmSession::benchmark`] measured.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BenchmarkReport {
+    pub model: String,
+    pub backend_label: String,
+    pub is_mmap: bool,
+    /// Allocated conversation window, in tokens.
+    pub context_length: u32,
+    /// The session's load time (download included on first use).
+    pub load_time_ms: u64,
+    pub prompt_tokens: u32,
+    pub max_tokens: u32,
+    pub warmup_runs: Vec<BenchmarkRun>,
+    pub runs: Vec<BenchmarkRun>,
+    /// Summary over `runs` (zero when there are none).
+    pub mean_ttft_ms: u64,
+    pub mean_decode_tokens_per_sec: f64,
+    pub min_decode_tokens_per_sec: f64,
+    pub max_decode_tokens_per_sec: f64,
+    pub mean_prefill_tokens_per_sec: f64,
+    /// Highest process footprint so far (includes the model load), in bytes.
+    pub peak_footprint_bytes: Option<u64>,
+    pub thermal_start: ThermalLevel,
+    pub thermal_end: ThermalLevel,
+    /// The listener asked to stop early; the report covers the runs that finished.
+    pub cancelled: bool,
+    pub sapient_version: String,
+    /// How the numbers are defined, for anyone reading an exported report.
+    pub method: String,
+}
+
+/// Progress callback for [`LlmSession::benchmark`]: called after every run
+/// (warm-up included). Return `false` to stop after the current run.
+#[uniffi::export(with_foreign)]
+pub trait BenchmarkListener: Send + Sync {
+    fn on_run(&self, run: BenchmarkRun, completed: u32, total: u32) -> bool;
+}
+
+const BENCHMARK_METHOD: &str = "greedy, chat-templated prompt, KV cache cleared before every run; \
+    decode tok/s = (tokens - 1) / (t_last - t_first); ttft = prefill + first token; \
+    prefill tok/s = prompt tokens / ttft; warm-up runs excluded from the summary; \
+    footprint = OS phys_footprint (iOS) or RSS (Linux/Android)";
+
+fn to_benchmark_run(
+    index: u32,
+    warmup: bool,
+    s: &sapient_generate::bench::BenchSample,
+) -> BenchmarkRun {
+    BenchmarkRun {
+        index,
+        warmup,
+        ttft_ms: s.ttft_ms,
+        elapsed_ms: s.elapsed_ms,
+        tokens: s.tokens as u32,
+        decode_tokens_per_sec: s.decode_tps,
+        prefill_tokens_per_sec: s.prefill_tps,
+        hit_eos: s.hit_eos,
+        footprint_bytes: sapient_generate::memory::footprint_bytes(),
+    }
+}
+
+#[uniffi::export]
+impl LlmSession {
+    /// Measure this session's model: `warmup` + `runs` greedy generations of
+    /// `max_tokens` tokens, same definitions as `sapient bench-llm`. Uses the
+    /// already-loaded model (no second copy in memory) and leaves the chat
+    /// history untouched; the next chat turn re-prefills its history, because
+    /// the benchmark overwrites the engine's cache. Blocking.
+    pub fn benchmark(
+        &self,
+        options: BenchmarkOptions,
+        listener: Option<Arc<dyn BenchmarkListener>>,
+    ) -> Result<BenchmarkReport, SapientError> {
+        if options.prompt.trim().is_empty() || options.max_tokens == 0 || options.runs == 0 {
+            return Err(SapientError::InvalidArgument {
+                reason: "benchmark needs a prompt, max_tokens > 0 and runs > 0".into(),
+            });
+        }
+        let pipeline = &self.pipeline;
+        let generation_err = |e: anyhow::Error| SapientError::Generation {
+            reason: format!("{e:#}"),
+        };
+        let prompt_text = pipeline
+            .format_chat_prompt(&[ChatMessage::user(options.prompt.clone())])
+            .map_err(generation_err)?;
+        let prompt_ids = pipeline
+            .tokenizer()
+            .encode(&prompt_text)
+            .map_err(generation_err)?;
+        let eos_ids = pipeline.eos_token_ids_pub();
+        let max_tokens = options.max_tokens as usize;
+        let total = options.warmup + options.runs;
+        let thermal_start = thermal_level();
+
+        let mut warmup_runs = Vec::new();
+        let mut runs = Vec::new();
+        let mut samples = Vec::new();
+        let mut cancelled = false;
+        for i in 0..total {
+            let warmup = i < options.warmup;
+            let sample = sapient_generate::bench::bench_generate(
+                pipeline,
+                &prompt_ids,
+                &eos_ids,
+                max_tokens,
+            )
+            .map_err(generation_err)?;
+            let index = if warmup {
+                i + 1
+            } else {
+                i - options.warmup + 1
+            };
+            let run = to_benchmark_run(index, warmup, &sample);
+            if warmup {
+                warmup_runs.push(run.clone());
+            } else {
+                runs.push(run.clone());
+                samples.push(sample);
+            }
+            if let Some(listener) = &listener {
+                if !listener.on_run(run, i + 1, total) && i + 1 < total {
+                    cancelled = true;
+                    break;
+                }
+            }
+        }
+
+        let summary = sapient_generate::bench::summarize(&samples);
+        Ok(BenchmarkReport {
+            model: self.model.clone(),
+            backend_label: pipeline.backend_display_label(),
+            is_mmap: pipeline.is_mmap(),
+            context_length: pipeline.context_length() as u32,
+            load_time_ms: self.load_time_ms,
+            prompt_tokens: prompt_ids.len() as u32,
+            max_tokens: options.max_tokens,
+            warmup_runs,
+            runs,
+            mean_ttft_ms: summary.as_ref().map_or(0, |s| s.mean_ttft_ms),
+            mean_decode_tokens_per_sec: summary.as_ref().map_or(0.0, |s| s.mean_decode_tps),
+            min_decode_tokens_per_sec: summary.as_ref().map_or(0.0, |s| s.min_decode_tps),
+            max_decode_tokens_per_sec: summary.as_ref().map_or(0.0, |s| s.max_decode_tps),
+            mean_prefill_tokens_per_sec: summary.as_ref().map_or(0.0, |s| s.mean_prefill_tps),
+            peak_footprint_bytes: sapient_generate::memory::peak_footprint_bytes(),
+            thermal_start,
+            thermal_end: thermal_level(),
+            cancelled,
+            sapient_version: version(),
+            method: BENCHMARK_METHOD.into(),
+        })
+    }
+
+    /// Async version of [`Self::benchmark`]; runs on the engine's blocking
+    /// pool and never blocks the caller.
+    pub async fn benchmark_async(
+        self: Arc<Self>,
+        options: BenchmarkOptions,
+        listener: Option<Arc<dyn BenchmarkListener>>,
+    ) -> Result<BenchmarkReport, SapientError> {
+        unblock(move || self.benchmark(options, listener)).await
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -631,6 +899,14 @@ mod tests {
         assert!(matches!(opts.strategy(), SamplingStrategy::Greedy));
         let cfg = opts.generation_config();
         assert_eq!(cfg.max_new_tokens, 512);
+        assert_eq!(opts.context_length, None);
+    }
+
+    #[test]
+    fn benchmark_defaults_match_bench_llm() {
+        let opts = BenchmarkOptions::default();
+        assert_eq!((opts.max_tokens, opts.runs, opts.warmup), (128, 3, 1));
+        assert!(!opts.prompt.is_empty());
     }
 
     #[test]
@@ -715,5 +991,91 @@ mod tests {
         let joined: String = sink.0.lock().unwrap().concat();
         assert_eq!(joined, full);
         assert_eq!(session.transcript().len(), 4);
+    }
+
+    /// A benchmark between two chat turns must not change the second reply.
+    /// The benchmark overwrites the engine's KV cache; if the pipeline still
+    /// believed the old chat prefix was cached, the prefix cache would reuse
+    /// benchmark positions as chat history (this was a real bug). Greedy
+    /// decoding makes the replies directly comparable. Run with:
+    /// `cargo test -p sapient-ffi --release -- --ignored`
+    #[test]
+    #[ignore = "downloads a model — network + disk"]
+    fn e2e_benchmark_between_chat_turns_smollm2() {
+        let opts = || GenerationOptions {
+            max_tokens: 24,
+            ..GenerationOptions::default()
+        };
+        let load = || LlmSession::load("smollm2-135m-q4".into(), opts()).expect("load");
+        let (first, second) = ("Name a fruit.", "Now name a colour.");
+
+        let reference = load();
+        reference.chat(first.into()).expect("turn 1");
+        let want = reference.chat(second.into()).expect("turn 2");
+
+        struct Count(Mutex<Vec<(u32, u32, bool)>>);
+        impl BenchmarkListener for Count {
+            fn on_run(&self, run: BenchmarkRun, completed: u32, total: u32) -> bool {
+                self.0.lock().unwrap().push((completed, total, run.warmup));
+                true
+            }
+        }
+        let session = load();
+        session.chat(first.into()).expect("turn 1");
+        let progress = Arc::new(Count(Mutex::new(Vec::new())));
+        let report = session
+            .benchmark(
+                BenchmarkOptions {
+                    max_tokens: 16,
+                    runs: 2,
+                    warmup: 1,
+                    ..BenchmarkOptions::default()
+                },
+                Some(progress.clone()),
+            )
+            .expect("benchmark");
+        let got = session.chat(second.into()).expect("turn 2");
+        assert_eq!(got, want, "a benchmark changed the next chat reply");
+
+        assert_eq!((report.warmup_runs.len(), report.runs.len()), (1, 2));
+        assert!(!report.cancelled);
+        assert!(report.prompt_tokens > 0 && report.context_length > 0);
+        assert!(report.runs.iter().all(|r| r.tokens > 0 && r.ttft_ms > 0));
+        assert!(report.mean_decode_tokens_per_sec > 0.0);
+        assert!(report.min_decode_tokens_per_sec <= report.max_decode_tokens_per_sec);
+        assert_eq!(
+            *progress.0.lock().unwrap(),
+            vec![(1, 3, true), (2, 3, false), (3, 3, false)]
+        );
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert!(report.peak_footprint_bytes.is_some_and(|b| b > 0));
+        // The chat history was not touched: 2 turns × (user + assistant).
+        assert_eq!(session.transcript().len(), 4);
+    }
+
+    #[test]
+    #[ignore = "downloads a model — network + disk"]
+    fn e2e_benchmark_listener_can_cancel_smollm2() {
+        struct StopAfterFirst;
+        impl BenchmarkListener for StopAfterFirst {
+            fn on_run(&self, _: BenchmarkRun, _: u32, _: u32) -> bool {
+                false
+            }
+        }
+        let session =
+            LlmSession::load("smollm2-135m-q4".into(), GenerationOptions::default()).expect("load");
+        let report = session
+            .benchmark(
+                BenchmarkOptions {
+                    max_tokens: 8,
+                    runs: 3,
+                    warmup: 0,
+                    ..BenchmarkOptions::default()
+                },
+                Some(Arc::new(StopAfterFirst)),
+            )
+            .expect("benchmark");
+        assert!(report.cancelled);
+        assert_eq!(report.runs.len(), 1);
     }
 }

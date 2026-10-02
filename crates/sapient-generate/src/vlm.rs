@@ -189,6 +189,7 @@ impl VlmPipeline {
             partial_rotary_factor: 1.0,
             head_dim: hidden / heads,
             moe: None,
+            kv_ctx_cap: None,
             raw: serde_json::Value::Null,
         };
 
