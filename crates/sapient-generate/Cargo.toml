@@ -29,7 +29,9 @@ tokio-stream = { workspace = true }
 tracing    = { workspace = true }
 futures    = { workspace = true }
 async-trait = { workspace = true }
-misaki-rs = { version = "0.3.0", default-features = false }
+# Vendored (MIT) with gzip-compressed, externally loadable dictionaries — see
+# vendor/misaki-rs/VENDORED.md. Upstream embeds 35.5 MB of JSON in the binary.
+misaki-rs = { path = "../../vendor/misaki-rs" }
 
 [features]
 default = []
@@ -38,6 +40,9 @@ mlx = ["sapient-models/mlx"]
 wgpu = ["sapient-models/wgpu"]
 # Live mic/speaker I/O for the speech-to-speech cascade (sapient converse).
 audio-io = ["sapient-audio/audio-io"]
+# Embed Kokoro's pronunciation dictionaries (7.6 MB gzip) in the binary instead
+# of downloading them next to the model on first use. For fully offline builds.
+embed-g2p = ["misaki-rs/embed-dict"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

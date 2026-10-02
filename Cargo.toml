@@ -1,4 +1,7 @@
 [workspace]
+# Third-party code vendored with local changes; built as a path dependency,
+# not linted or formatted as part of the workspace.
+exclude = ["vendor/misaki-rs"]
 members = [
     "crates/sapient-core",
     "crates/sapient-ir",

@@ -12,6 +12,20 @@
 
 ---
 
+## Binary size (2026-10-02)
+
+| CPU build, Apple Silicon | Size |
+|---|---:|
+| v0.6.1 release | 52.5 MB |
+| main, default (Kokoro dictionaries downloaded with the model) | **16.7 MB** |
+| main, `--features embed-g2p` (dictionaries built in, gzip) | 24.6 MB |
+
+35.5 MB of the old binary was pronunciation data for Kokoro text-to-speech. Speech
+output is byte-identical before and after on three voices. Other platforms and the
+`-metal` / `-gpu` variants are not re-measured yet.
+
+---
+
 ## How SAPIENT numbers are measured (read this first)
 
 **From 2026-10 on:** `sapient bench-llm <alias | file.gguf> --json` reports

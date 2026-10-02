@@ -1,0 +1,41 @@
+# Vendored copy of misaki-rs 0.3.0 (MIT) — https://github.com/MicheleYin/misaki-rs
+#
+# Changed from upstream (see VENDORED.md):
+#   * the four pronunciation dictionaries and the tagger weights are stored
+#     gzip-compressed (35.5 MB of JSON -> 7.6 MB);
+#   * they can be loaded from a directory at run time (`data::set_data_dir`),
+#     and are embedded in the binary only with the `embed-dict` feature;
+#   * the optional espeak fallback is removed.
+[package]
+name = "misaki-rs"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+description = "POS-aware Grapheme-to-Phoneme (G2P) engine for Kokoro-class TTS (vendored, slimmed)."
+repository = "https://github.com/MicheleYin/misaki-rs"
+publish = false
+
+[lib]
+name = "misaki_rs"
+path = "src/lib.rs"
+
+[features]
+default = []
+# Embed the gzip-compressed dictionaries in the binary (works with no downloaded
+# data). Without it the data directory must be set before `G2P::new`.
+embed-dict = []
+
+[dependencies]
+log = "0.4"
+regex = "1.10"
+num2words = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+fancy-regex = "0.13"
+language-tokenizer = { version = "0.1", features = ["snowball"] }
+thiserror = "2.0"
+flate2 = "1"
+
+# Upstream gates its espeak fallback on a feature this vendored copy does not have.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("espeak"))'] }

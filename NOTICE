@@ -61,3 +61,13 @@ the license requires you to:
 This product bundles third-party open-source components, each distributed under
 its own license. Those licenses are listed in the dependency manifests
 (Cargo.toml / Cargo.lock) and retained in the respective upstream sources.
+
+------------------------------------------------------------------------------
+Third-party code vendored in this repository
+------------------------------------------------------------------------------
+
+vendor/misaki-rs — misaki-rs 0.3.0, Copyright (c) 2026 Michele Yin, MIT License
+(vendor/misaki-rs/LICENSE). Grapheme-to-phoneme engine used by Kokoro
+text-to-speech. Vendored with local changes listed in
+vendor/misaki-rs/VENDORED.md. It remains under the MIT License; the SAPIENT
+licenses above apply to the SAPIENT code that uses it, not to this directory.

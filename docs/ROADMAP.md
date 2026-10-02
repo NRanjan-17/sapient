@@ -540,7 +540,7 @@ ONNX-wrapper crates (C++ dep) don't offer together.
   in 6d were built + unit-tested (BiLSTM, iSTFT with 1,2,1 irfft + window² OLA, AdaLayerNorm,
   AdaIN1d, NSF SineGen, length-regulator) and the whole model is **validated stage-by-stage
   vs a PyTorch reference** (ALBERT 1e-5 … audio envelope 0.999). G2P via pure-Rust
-  `misaki-rs` (no espeak). Weights: offline `.pth→safetensors` (`scripts/convert_kokoro_to_safetensors.py`)
+  `misaki-rs` (no espeak; vendored, dictionaries fetched with the model — binary 52 → 17 MB, 2026-10-02). Weights: offline `.pth→safetensors` (`scripts/convert_kokoro_to_safetensors.py`)
   → mirror `sai1974dev/kokoro-82m-safetensors` (or `SAPIENT_KOKORO_DIR`). `KokoroTts: Tts`
   → `sapient speak kokoro-82m` + **`converse --speak` now defaults to Kokoro**. Apache-2.0,
   54 voices. (Supersedes the "Kokoro dropped" call in 6d — the LM-codec detour shipped a
