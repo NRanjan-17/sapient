@@ -695,6 +695,130 @@ pub unsafe fn dot_q8_0_4rows_sdot_x4(
     out
 }
 
+/// [`quantize_row_to_i8_blocks`] into caller-owned buffers (`q`: `x.len()`
+/// values, `scales`: one per 32-element block), NEON on aarch64.
+///
+/// Bit-identical to the allocating version: the block max is exact, the scale
+/// and its reciprocal are the same f32 divisions, and `vcvtaq_s32_f32` rounds
+/// to nearest with ties away from zero exactly like `f32::round`.
+pub fn quantize_row_to_i8_blocks_into(x: &[f32], q: &mut [i8], scales: &mut [f32]) {
+    debug_assert_eq!(x.len() % QK, 0);
+    debug_assert!(q.len() >= x.len() && scales.len() >= x.len() / QK);
+    for (b, blk) in x.chunks_exact(QK).enumerate() {
+        let out = &mut q[b * QK..(b + 1) * QK];
+        #[cfg(target_arch = "aarch64")]
+        // SAFETY: NEON is baseline on aarch64; `blk` and `out` hold 32 values.
+        unsafe {
+            use std::arch::aarch64::*;
+            let p = blk.as_ptr();
+            let v: [float32x4_t; 8] = std::array::from_fn(|i| vld1q_f32(p.add(4 * i)));
+            let mut m = vabsq_f32(v[0]);
+            for vi in &v[1..] {
+                m = vmaxq_f32(m, vabsq_f32(*vi));
+            }
+            let max_abs = vmaxvq_f32(m);
+            let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
+            let inv = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+            let lo = vdupq_n_s32(-127);
+            let hi = vdupq_n_s32(127);
+            let mut i32s = [vdupq_n_s32(0); 8];
+            for (o, vi) in i32s.iter_mut().zip(&v) {
+                *o = vminq_s32(vmaxq_s32(vcvtaq_s32_f32(vmulq_n_f32(*vi, inv)), lo), hi);
+            }
+            for h in 0..2 {
+                let a = vcombine_s16(vmovn_s32(i32s[4 * h]), vmovn_s32(i32s[4 * h + 1]));
+                let b = vcombine_s16(vmovn_s32(i32s[4 * h + 2]), vmovn_s32(i32s[4 * h + 3]));
+                vst1q_s8(
+                    out.as_mut_ptr().add(16 * h),
+                    vcombine_s8(vmovn_s16(a), vmovn_s16(b)),
+                );
+            }
+            scales[b] = scale;
+        }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            let max_abs = blk.iter().map(|v| v.abs()).fold(0.0f32, f32::max);
+            let scale = if max_abs > 0.0 { max_abs / 127.0 } else { 1.0 };
+            let inv = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+            for (o, &v) in out.iter_mut().zip(blk) {
+                *o = (v * inv).round().clamp(-127.0, 127.0) as i8;
+            }
+            scales[b] = scale;
+        }
+    }
+}
+
+/// Serial W8A8 GEMM `out[i·out_stride + j] = x_i · w_j` built on the 4×4 tile
+/// ([`dot_q8_0_4rows_sdot_x4`]), for callers that parallelize at a coarser
+/// level (attention: one call per head × query tile).
+///
+/// * `x_i8` — `m × k` int8 activations; `x_scales_t` their per-32 scales,
+///   block-major (`[bi · m + i]`).
+/// * `w_blocks` — `n` Q8_0 rows of `k` values; `w_scales_t` their scales widened
+///   to f32, block-major (`[bi · n + j]`).
+///
+/// Every element equals the single-row kernel's result bit for bit.
+///
+/// # Safety
+/// Requires `dotprod`; slices must match the stated sizes, `k % 32 == 0`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,dotprod")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn q8_0_gemm_nt_serial(
+    x_i8: &[i8],
+    x_scales_t: &[f32],
+    m: usize,
+    k: usize,
+    w_blocks: &[u8],
+    w_scales_t: &[f32],
+    n: usize,
+    out: &mut [f32],
+    out_stride: usize,
+) {
+    let bpr = k / QK;
+    let row_bytes = bpr * Q8_0_BLOCK_BYTES;
+    debug_assert!(x_i8.len() >= m * k && x_scales_t.len() >= bpr * m);
+    debug_assert!(w_blocks.len() >= n * row_bytes && w_scales_t.len() >= bpr * n);
+    let xi = |i: usize| &x_i8[i * k..(i + 1) * k];
+    let wr = |j: usize| &w_blocks[j * row_bytes..(j + 1) * row_bytes];
+    let (m4, n4) = (m / 4 * 4, n / 4 * 4);
+    for j in (0..n4).step_by(4) {
+        let w = [wr(j), wr(j + 1), wr(j + 2), wr(j + 3)];
+        for i in (0..m4).step_by(4) {
+            let r = dot_q8_0_4rows_sdot_x4(
+                w,
+                w_scales_t,
+                n,
+                j,
+                [xi(i), xi(i + 1), xi(i + 2), xi(i + 3)],
+                x_scales_t,
+                m,
+                i,
+            );
+            for (ri, rr) in r.iter().enumerate() {
+                let o = (i + ri) * out_stride + j;
+                out[o..o + 4].copy_from_slice(rr);
+            }
+        }
+    }
+    // Leftover activation rows (all weight rows) and leftover weight rows.
+    let row_scales = |i: usize| -> Vec<f32> { (0..bpr).map(|b| x_scales_t[b * m + i]).collect() };
+    for i in m4..m {
+        let xs = row_scales(i);
+        for j in 0..n {
+            out[i * out_stride + j] = dot_q8_0_row_sdot(wr(j), xi(i), &xs);
+        }
+    }
+    if n4 < n {
+        for i in 0..m4 {
+            let xs = row_scales(i);
+            for j in n4..n {
+                out[i * out_stride + j] = dot_q8_0_row_sdot(wr(j), xi(i), &xs);
+            }
+        }
+    }
+}
+
 /// Widen a Q8_0 weight row's per-block f16 scales to f32 into `out` (one per
 /// block). Same conversion the row kernels do inline.
 pub fn q8_0_row_scales(row_blocks: &[u8], out: &mut [f32]) {
@@ -3251,6 +3375,89 @@ mod tests {
         };
         for r in 0..4 {
             assert_eq!(x4[r].to_bits(), singles[r].to_bits(), "row {r} differs");
+        }
+    }
+
+    #[test]
+    fn quantize_into_matches_allocating_version() {
+        let x: Vec<f32> = (0..32 * 9)
+            .map(|i| match i % 37 {
+                0 => 0.5,  // exact tie after scaling in some blocks
+                1 => -2.5, // negative tie
+                _ => ((i * 7919 % 211) as f32 - 105.0) * 0.031,
+            })
+            .chain(std::iter::repeat_n(0.0, 32)) // all-zero block
+            .collect();
+        let (q_ref, s_ref) = quantize_row_to_i8_blocks(&x);
+        let mut q = vec![0i8; x.len()];
+        let mut sc = vec![0.0f32; x.len() / 32];
+        quantize_row_to_i8_blocks_into(&x, &mut q, &mut sc);
+        assert_eq!(q, q_ref);
+        for (a, b) in sc.iter().zip(&s_ref) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn q8_0_gemm_nt_serial_matches_single_row() {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return;
+        }
+        let (m, k, n) = (11usize, 96usize, 10usize); // leftovers on both sides
+        let bpr = k / 32;
+        let w: Vec<u8> = (0..n)
+            .flat_map(|j| {
+                let wf: Vec<f32> = (0..k)
+                    .map(|i| ((i * (13 + j) % 89) as f32 - 44.0) * 0.02)
+                    .collect();
+                q8_0_weight_row(&wf)
+            })
+            .collect();
+        let mut ws_t = vec![0.0f32; bpr * n];
+        for j in 0..n {
+            let mut ws = vec![0.0f32; bpr];
+            q8_0_row_scales(&w[j * bpr * 34..(j + 1) * bpr * 34], &mut ws);
+            for b in 0..bpr {
+                ws_t[b * n + j] = ws[b];
+            }
+        }
+        let mut xi8 = vec![0i8; m * k];
+        let mut xs = vec![0.0f32; m * bpr];
+        for i in 0..m {
+            let xf: Vec<f32> = (0..k)
+                .map(|c| ((c * (i + 5) * 17 % 101) as f32 - 50.0) * 0.05)
+                .collect();
+            quantize_row_to_i8_blocks_into(
+                &xf,
+                &mut xi8[i * k..(i + 1) * k],
+                &mut xs[i * bpr..(i + 1) * bpr],
+            );
+        }
+        let mut xs_t = vec![0.0f32; bpr * m];
+        for i in 0..m {
+            for b in 0..bpr {
+                xs_t[b * m + i] = xs[i * bpr + b];
+            }
+        }
+        let stride = n + 3;
+        let mut out = vec![f32::NAN; m * stride];
+        unsafe { q8_0_gemm_nt_serial(&xi8, &xs_t, m, k, &w, &ws_t, n, &mut out, stride) };
+        for i in 0..m {
+            for j in 0..n {
+                let single = unsafe {
+                    dot_q8_0_row_sdot(
+                        &w[j * bpr * 34..(j + 1) * bpr * 34],
+                        &xi8[i * k..(i + 1) * k],
+                        &xs[i * bpr..(i + 1) * bpr],
+                    )
+                };
+                assert_eq!(
+                    out[i * stride + j].to_bits(),
+                    single.to_bits(),
+                    "({i}, {j})"
+                );
+            }
         }
     }
 

@@ -142,6 +142,8 @@ pub struct SmolVlaQuant {
     /// Vectorized polynomial `exp` in the vision tower's softmax and GELU
     /// (`SiglipVision::with_fast_math`) instead of libm calls.
     pub fast_math: bool,
+    /// int8 attention in the vision tower (`SiglipVision::with_int8_attention`).
+    pub int8_attention: bool,
 }
 
 impl SmolVlaQuant {
@@ -151,12 +153,14 @@ impl SmolVlaQuant {
         vlm: false,
         expert: false,
         fast_math: false,
+        int8_attention: false,
     };
     pub const ALL: Self = Self {
         vision: true,
         vlm: true,
         expert: true,
         fast_math: true,
+        int8_attention: true,
     };
 }
 
@@ -330,7 +334,14 @@ impl SmolVla {
             Ok("1") => true,
             _ => quant.fast_math,
         };
-        let vision = SiglipVision::new(vcfg, vision_w)?.with_fast_math(fast_math);
+        let int8_attention = match std::env::var("SAPIENT_VLA_INT8_ATTN").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            _ => quant.int8_attention,
+        };
+        let vision = SiglipVision::new(vcfg, vision_w)?
+            .with_fast_math(fast_math)
+            .with_int8_attention(int8_attention);
         Ok(Self { cfg, vision, w })
     }
 

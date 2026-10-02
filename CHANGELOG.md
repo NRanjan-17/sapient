@@ -27,8 +27,8 @@ section below as the GitHub release body.
   prefix K/V, one flow-matching step, the final chunk): the actions match to 4e-6 on the
   same inputs and start noise. `scripts/gen_smolvla_fixture.py` regenerates the reference.
 - **Three precisions** (`--precision fast|balanced|exact`, also `"precision"` in the
-  serve request). Per chunk, one camera: `fast` (all 8-bit, default) 0.66 s on an Apple
-  M4 and 3.7 s on a Raspberry Pi 5; `balanced` (8-bit action expert only) 1.0 s / 5.9 s;
+  serve request). Per chunk, one camera: `fast` (all 8-bit, default) 0.6 s on an Apple
+  M4 and 3.3 s on a Raspberry Pi 5 (its vision attention runs in int8); `balanced` (8-bit action expert only) 1.0 s / 5.9 s;
   `exact` (f32) 1.7 s / 11.9 s.
 - Action error over eight synthetic observations (RMS, normalized units, typical action
   magnitude 0.36): `fast` 0.012, `balanced` 0.004; LeRobot's own default bf16 precision
