@@ -201,10 +201,10 @@ VISION_RE = re.compile(r"vision (\d+) ms · prefill (\d+) ms")
 STAGE_RE = re.compile(r"\[vision\] (\d+) patches · (.*) ms")
 
 
-def bench_vision(sapient, image, runs):
+def bench_vision(sapient, image, runs, model=VLM_MODEL):
     enc, pre, stages = [], [], []
     for _ in range(runs + 1):  # first run is a warm-up (page cache), discarded
-        rc, out, err = sh([sapient, "see", image, "-p", "Describe.", "--model", VLM_MODEL,
+        rc, out, err = sh([sapient, "see", image, "-p", "Describe.", "--model", model,
                            "--max-tokens", "8"], env={"SAPIENT_VISION_TIMING": "1"})
         text = out + err
         m = VISION_RE.search(text)
@@ -218,7 +218,7 @@ def bench_vision(sapient, image, runs):
                            (part.rsplit(" ", 1) for part in s.group(2).split(" · "))})
     enc, pre, stages = enc[1:], pre[1:], stages[1:]
     res = {
-        "model": VLM_MODEL, "runs": runs,
+        "model": model, "runs": runs,
         "encode_ms_runs": enc,
         "encode_ms_p50": statistics.median(enc),
         "encode_ms_max": max(enc),
@@ -240,6 +240,8 @@ def main():
     ap.add_argument("--vision-runs", type=int, default=10)
     ap.add_argument("--ppl-chunks", type=int, default=20, help="512-token wikitext-2 chunks to score; 0 disables the quality section")
     ap.add_argument("--backend", default="cpu")
+    ap.add_argument("--vlm-model", default=VLM_MODEL,
+                    help="vision model for the image-encode section (e.g. smolvlm2-500m)")
     ap.add_argument("--skip-llm", action="store_true")
     ap.add_argument("--skip-vision", action="store_true")
     ap.add_argument("--skip-ppl", action="store_true")
@@ -292,11 +294,11 @@ def main():
                 res["quality"][model] = entry
 
     if not a.skip_vision:
-        print("[vision] smolvlm-256m …", file=sys.stderr)
+        print(f"[vision] {a.vlm_model} …", file=sys.stderr)
         with tempfile.TemporaryDirectory() as td:
             img = os.path.join(td, "bench_image.png")
             write_test_png(img)
-            res["vision"] = bench_vision(sapient, img, a.vision_runs)
+            res["vision"] = bench_vision(sapient, img, a.vision_runs, a.vlm_model)
 
     out = a.out or os.path.join("benchmarks", "{}-{}.json".format(
         datetime.date.today().isoformat(), platform.node().split(".")[0] or "host"))

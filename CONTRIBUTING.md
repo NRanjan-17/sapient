@@ -371,6 +371,9 @@ after (`scripts/bench_loop.py` runs it, and llama.cpp on the same file, for you)
 
 ### Benchmarks
 
+Vision gates: `SAPIENT_VLM_MODEL=smolvlm2-500m cargo test -p sapient-generate --release
+--test vlm_e2e --test vlm_geometry_probe -- --ignored` runs them on another model.
+
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
 kernel changes on a small-cache ARM board as well as an M-series Mac: a loop that

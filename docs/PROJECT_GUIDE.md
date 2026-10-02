@@ -784,7 +784,8 @@ sapient bench-llm openhorizon/qwen2.5-0.5b-q4 \
 sapient bench-llm openhorizon/qwen2.5-0.5b-q4 --json > results.json
 ```
 
-For the vision tower (`sapient see`), `SAPIENT_VISION_TIMING=1` prints a per-stage
+Vision models: `smolvlm-256m` (default) and `smolvlm2-500m`; the vision gates run against
+either with `SAPIENT_VLM_MODEL=<alias>`. For the vision tower (`sapient see`), `SAPIENT_VISION_TIMING=1` prints a per-stage
 breakdown (norm / q,k,v / attention / out_proj / fc1 / GELU / fc2) — see the
 2026-10-02 vision section of `docs/BENCHMARKS.md`.
 

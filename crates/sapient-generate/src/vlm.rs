@@ -135,7 +135,11 @@ impl VlmPipeline {
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(config)?).context("config.json")?;
         match cfg["model_type"].as_str() {
-            Some("idefics3") => Self::from_files_idefics3(&cfg, tokenizer, weights),
+            // "smolvlm" is SmolVLM2's model_type — the same Idefics3 layout
+            // (SigLIP tower + pixel-shuffle connector + Llama-family backbone).
+            Some("idefics3") | Some("smolvlm") => {
+                Self::from_files_idefics3(&cfg, tokenizer, weights)
+            }
             Some("gemma3") => Self::from_files_gemma3(&cfg, tokenizer, weights),
             other => anyhow::bail!(
                 "VLM path supports Idefics3/SmolVLM and Gemma3 multimodal; got model_type {other:?}"
@@ -200,10 +204,13 @@ impl VlmPipeline {
         let mut text_w: HashMap<String, Tensor> = HashMap::new();
         for (name, tensor) in all {
             if name.contains("vision_model") || name.contains("connector") {
-                let tensor = maybe_quantize_vision(&name, tensor);
+                let tensor = quantize_f32_linear(&name, maybe_quantize_vision(&name, tensor));
                 vision_w.insert(name, tensor);
             } else if let Some(rest) = name.strip_prefix("model.text_model.") {
                 // → the names LlamaForward expects ("model.layers.N...", etc.)
+                // F16/BF16 linears are quantized inside the engine; an F32
+                // checkpoint (SmolVLM2) is quantized here by the same rule.
+                let tensor = quantize_f32_linear(&name, tensor);
                 text_w.insert(format!("model.{rest}"), tensor);
             } else {
                 text_w.insert(name, tensor); // lm_head.weight
@@ -496,6 +503,24 @@ fn maybe_quantize_vision(name: &str, t: Tensor) -> Tensor {
     // 4304 % 32 = 16 — so its fc2 stays f32 on the parallel SGEMM path).
     let k_ok = t.shape().dims().last().is_some_and(|d| d % 32 == 0);
     if k_ok && sapient_models::forward::common::should_quantize_online(name, &t) {
+        sapient_models::forward::common::quantize_tensor_to_q8_0(t)
+    } else {
+        t
+    }
+}
+
+/// Quantize an **F32** linear weight to Q8_0 at load, by the same shape/name
+/// rule the engines apply to F16/BF16 weights. SmolVLM2 ships a full-F32
+/// checkpoint (1.9 GB); left as f32 its linears take the SGEMM path (slower
+/// than the W8A8 SDOT path the BF16 SmolVLM-256M gets) and hold 4 bytes/weight.
+/// Only the Idefics3-family VLM loader uses this — the text engines keep F32
+/// checkpoints exact (their synthetic coherence tests rely on that).
+fn quantize_f32_linear(name: &str, t: Tensor) -> Tensor {
+    let k_ok = t.shape().dims().last().is_some_and(|d| d % 32 == 0);
+    if k_ok
+        && t.dtype() == sapient_core::DType::F32
+        && sapient_models::forward::common::is_quantizable_linear(name, &t)
+    {
         sapient_models::forward::common::quantize_tensor_to_q8_0(t)
     } else {
         t
