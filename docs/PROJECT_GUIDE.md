@@ -492,6 +492,12 @@ returning `false` from it cancels generation. Internally a private tokio runtime
 same `Pipeline` the CLI uses (prefix cache on, so multi-turn chats skip re-prefilling
 history). Cross-compiles are validated for iOS device/simulator and Android arm64.
 
+Apps can also download a model ahead of time without loading it:
+`download_model(model, listener)` fetches exactly the files a later `load` uses (and a GGUF
+model's separately hosted tokenizer), reporting bytes received against the total from
+`model_download_size`, so the model then loads with no network and the app can show a real
+progress bar.
+
 For apps that need to know how a model performs on the actual phone, `LlmSession` also has
 `benchmark(options, listener)`: greedy timed runs on the loaded model returning decode and
 prefill tokens/s, time to first token and the process's peak memory, computed by the same

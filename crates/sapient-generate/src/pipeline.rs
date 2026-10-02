@@ -90,6 +90,40 @@ pub struct LoadOptions {
     pub context_length: Option<usize>,
 }
 
+/// The Hub options `from_pretrained` downloads with. Shared with
+/// [`Pipeline::download_only`] so a download-only call fetches exactly the
+/// files a later load uses.
+fn pipeline_hub_options(opts: &LoadOptions) -> HubOptions {
+    let mut hub_opts = opts.hub.clone();
+    if hub_opts.formats == LoadOptions::default().hub.formats {
+        // Prefer full-precision safetensors for native forward passes.
+        hub_opts.formats = vec!["safetensors".into(), "bin".into(), "gguf".into()];
+    }
+    hub_opts
+}
+
+/// The repo the GGUF path loads its tokenizer from: chosen by the GGUF's own
+/// `general.name`, else its architecture. Shared by the loader and
+/// [`Pipeline::download_only`] (which prefetches it so a downloaded GGUF
+/// model then loads offline).
+fn gguf_tokenizer_repo(
+    metadata: &std::collections::HashMap<String, sapient_io::GgufValue>,
+    model_info: &ModelInfo,
+) -> Option<&'static str> {
+    let model_id = metadata
+        .get("general.name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    tokenizer_fallback_model(model_id)
+        .or_else(|| tokenizer_fallback_model(model_info.model_type.as_str()))
+}
+
+/// Returned (inside `anyhow::Error`) when a download's progress callback
+/// asks to stop. Partial files stay in the cache and resume next time.
+#[derive(Debug, thiserror::Error)]
+#[error("download cancelled")]
+pub struct DownloadCancelled;
+
 /// Phones always memory-map GGUF weights. Their apps run under a per-process
 /// memory limit (~3.4 GB on a 6–8 GB iPhone) that counts heap copies but not
 /// clean mapped file pages, and the heap loader peaks at ~2x the file size.
@@ -140,13 +174,7 @@ impl Pipeline {
         debug!("Loading model: {model_id}");
         let backend = opts.backend;
 
-        let mut hub_opts = opts.hub.clone();
-        if hub_opts.formats == LoadOptions::default().hub.formats {
-            // Prefer full-precision safetensors for native forward passes.
-            hub_opts.formats = vec!["safetensors".into(), "bin".into(), "gguf".into()];
-        }
-
-        let hub = HubClient::with_options(hub_opts)?;
+        let hub = HubClient::with_options(pipeline_hub_options(&opts))?;
         let model_files = hub
             .download(model_id)
             .await
@@ -267,6 +295,86 @@ impl Pipeline {
         })
     }
 
+    /// Download exactly the files [`from_pretrained_with_opts`](Self::from_pretrained_with_opts)
+    /// would load (plus, for GGUF models, the tokenizer it fetches separately),
+    /// without loading anything into memory. Afterwards the model loads from
+    /// the cache with no network.
+    ///
+    /// `on_progress(downloaded_bytes, total_bytes)` is called about four
+    /// times a second and once at the end; `total_bytes` is 0 when the Hub
+    /// didn't report sizes. Return `false` to cancel ([`DownloadCancelled`]);
+    /// partial files stay in the cache and the next download resumes them.
+    pub async fn download_only<F>(
+        model_id: &str,
+        opts: &LoadOptions,
+        mut on_progress: F,
+    ) -> Result<()>
+    where
+        F: FnMut(u64, u64) -> bool + Send,
+    {
+        let hub = Arc::new(HubClient::with_options(pipeline_hub_options(opts))?);
+        let total = hub.repo_total_bytes(model_id).await.unwrap_or(0);
+        let blobs = HubClient::blobs_dir_for_model(model_id);
+        let received = || blobs.as_deref().map(sapient_hub::dir_bytes).unwrap_or(0);
+
+        let mut download = {
+            let hub = Arc::clone(&hub);
+            let model_id = model_id.to_owned();
+            tokio::spawn(async move { hub.download(&model_id).await })
+        };
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(250));
+        let files = loop {
+            tokio::select! {
+                finished = &mut download => {
+                    break finished
+                        .context("download task failed")?
+                        .with_context(|| format!("Failed to download model '{model_id}'"))?;
+                }
+                _ = tick.tick() => {
+                    if !on_progress(received(), total) {
+                        download.abort();
+                        return Err(DownloadCancelled.into());
+                    }
+                }
+            }
+        };
+        ensure_weights_present(&files)?;
+
+        // GGUF repos carry no tokenizer; the loader fetches it from another
+        // repo named in the GGUF metadata. Fetch it now so loading is offline.
+        let is_gguf = files
+            .weight_paths
+            .iter()
+            .all(|p| p.extension().and_then(|e| e.to_str()) == Some("gguf"));
+        if is_gguf {
+            let path = files.weight_paths[0].clone();
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                let metadata = GgufLoader::parse_metadata_only(&path)
+                    .with_context(|| format!("failed to parse GGUF header: {}", path.display()))?;
+                let info = ModelInfo::from_gguf_metadata(&metadata)?;
+                if let Some(repo) = gguf_tokenizer_repo(&metadata, &info) {
+                    SapientTokenizer::from_pretrained(repo)
+                        .with_context(|| format!("failed to download tokenizer from '{repo}'"))?;
+                }
+                Ok(())
+            })
+            .await
+            .context("tokenizer download task failed")??;
+        }
+
+        let done = received();
+        on_progress(done, total.max(done));
+        Ok(())
+    }
+
+    /// Bytes [`download_only`](Self::download_only) will fetch for `model_id`
+    /// (0 if the Hub doesn't report sizes). One small metadata request.
+    pub async fn download_size(model_id: &str, opts: &LoadOptions) -> Result<u64> {
+        HubClient::with_options(pipeline_hub_options(opts))?
+            .repo_total_bytes(model_id)
+            .await
+    }
+
     /// Load a GGUF model from a local `.gguf` file.
     ///
     /// Weights are kept quantized in memory (Q4_0/Q8_0 as packed blocks, no F32
@@ -346,9 +454,7 @@ impl Pipeline {
             .get("general.name")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let tokenizer = if let Some(fallback) = tokenizer_fallback_model(model_id)
-            .or_else(|| tokenizer_fallback_model(model_info.model_type.as_str()))
-        {
+        let tokenizer = if let Some(fallback) = gguf_tokenizer_repo(&metadata, &model_info) {
             Arc::new(
                 SapientTokenizer::from_pretrained(fallback)
                     .with_context(|| format!("failed to load tokenizer from '{fallback}'"))?,

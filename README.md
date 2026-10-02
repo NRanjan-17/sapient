@@ -386,7 +386,8 @@ threads as the phone heats — MOBILE.md §6–7). One object API, generated fro
 the [`sapient-ffi`](crates/sapient-ffi) crate via UniFFI:
 `LlmSession.load(model, options)` → `chat(...)` / `chatStream(..., listener)`
 (token callback; return `false` to cancel) / `reset()`, plus
-**`benchmark(...)`** for on-device tok/s, TTFT and peak memory (same
+**`downloadModel(...)`** to fetch a model ahead of time with byte-level
+progress (it then loads offline), **`benchmark(...)`** for on-device tok/s, TTFT and peak memory (same
 definitions as `sapient bench-llm`) and memory readings
 (`memoryFootprintBytes()`, `availableMemoryBytes()`). On phones the engine
 memory-maps GGUF weights, quantizes safetensors checkpoints tensor-by-tensor

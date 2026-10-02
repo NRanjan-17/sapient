@@ -55,6 +55,9 @@ pub enum SapientError {
     InvalidArgument { reason: String },
     #[error("internal error: {reason}")]
     Internal { reason: String },
+    /// The caller cancelled (e.g. a `DownloadListener` returned `false`).
+    #[error("cancelled")]
+    Cancelled,
 }
 
 // ── Runtime plumbing ──────────────────────────────────────────────────────────
@@ -201,6 +204,65 @@ pub fn thermal_level() -> ThermalLevel {
         2 => ThermalLevel::Serious,
         _ => ThermalLevel::Critical,
     }
+}
+
+// ── Downloads ────────────────────────────────────────────────────────────────
+
+/// Progress callback for [`download_model`], called about four times a
+/// second and once at the end. `total_bytes` is 0 when the Hub didn't report
+/// sizes. Return `false` to cancel.
+#[uniffi::export(with_foreign)]
+pub trait DownloadListener: Send + Sync {
+    fn on_progress(&self, downloaded_bytes: u64, total_bytes: u64) -> bool;
+}
+
+/// Download a catalog model without loading it, so it can be loaded later
+/// with no network: exactly the files `LlmSession::load` would fetch, plus a
+/// GGUF model's separately hosted tokenizer. Returns once everything is in
+/// the cache. A cancelled download fails with `SapientError::Cancelled`; its
+/// partial files stay and the next download resumes them.
+#[uniffi::export]
+pub async fn download_model(
+    model: String,
+    listener: Option<Arc<dyn DownloadListener>>,
+) -> Result<(), SapientError> {
+    // hf-hub needs a tokio reactor: run on the private runtime, await the
+    // (executor-agnostic) JoinHandle from whatever executor polls us.
+    runtime()
+        .spawn(async move {
+            Pipeline::download_only(&model, &LoadOptions::default(), |done, total| {
+                listener.as_ref().is_none_or(|l| l.on_progress(done, total))
+            })
+            .await
+        })
+        .await
+        .map_err(|e| SapientError::Internal {
+            reason: format!("sapient-ffi worker join error: {e}"),
+        })?
+        .map_err(|e| {
+            if e.is::<sapient_generate::pipeline::DownloadCancelled>() {
+                SapientError::Cancelled
+            } else {
+                SapientError::Load {
+                    reason: format!("{e:#}"),
+                }
+            }
+        })
+}
+
+/// Bytes [`download_model`] will fetch for `model` (0 if unknown). One small
+/// metadata request; use it to show "1.06 GB to download" before starting.
+#[uniffi::export]
+pub async fn model_download_size(model: String) -> Result<u64, SapientError> {
+    runtime()
+        .spawn(async move { Pipeline::download_size(&model, &LoadOptions::default()).await })
+        .await
+        .map_err(|e| SapientError::Internal {
+            reason: format!("sapient-ffi worker join error: {e}"),
+        })?
+        .map_err(|e| SapientError::Load {
+            reason: format!("{e:#}"),
+        })
 }
 
 // ── Memory ───────────────────────────────────────────────────────────────────
@@ -1051,6 +1113,68 @@ mod tests {
         assert!(report.peak_footprint_bytes.is_some_and(|b| b > 0));
         // The chat history was not touched: 2 turns × (user + assistant).
         assert_eq!(session.transcript().len(), 4);
+    }
+
+    /// Download-only fetches the model with monotonic progress; a second
+    /// call is a quick no-op; the model then loads. Run with:
+    /// `cargo test -p sapient-ffi --release -- --ignored`
+    #[test]
+    #[ignore = "downloads a model — network + disk"]
+    fn e2e_download_model_then_load_smollm2() {
+        struct Record(Mutex<Vec<(u64, u64)>>);
+        impl DownloadListener for Record {
+            fn on_progress(&self, done: u64, total: u64) -> bool {
+                self.0.lock().unwrap().push((done, total));
+                true
+            }
+        }
+        let model = "smollm2-135m-q4".to_string();
+        let size = runtime()
+            .block_on(model_download_size(model.clone()))
+            .expect("size");
+        assert!(size > 50_000_000, "the 135M Q4 GGUF is ~100 MB, got {size}");
+
+        let record = Arc::new(Record(Mutex::new(Vec::new())));
+        runtime()
+            .block_on(download_model(model.clone(), Some(record.clone())))
+            .expect("download");
+        let seen = record.0.lock().unwrap().clone();
+        let (last_done, last_total) = *seen.last().expect("progress was reported");
+        assert!(
+            last_done >= size,
+            "final progress {last_done} < size {size}"
+        );
+        assert_eq!(last_total, size.max(last_done));
+        assert!(
+            seen.windows(2).all(|w| w[0].0 <= w[1].0),
+            "progress never goes backwards"
+        );
+
+        // Already cached: returns without downloading again.
+        runtime()
+            .block_on(download_model(model.clone(), None))
+            .expect("cached");
+        LlmSession::load(model, GenerationOptions::default()).expect("load after download");
+    }
+
+    #[test]
+    #[ignore = "downloads a model — network + disk"]
+    fn e2e_download_can_be_cancelled() {
+        struct Stop;
+        impl DownloadListener for Stop {
+            fn on_progress(&self, _: u64, _: u64) -> bool {
+                false
+            }
+        }
+        // A model not used by the other tests, so it is not already cached.
+        let result = runtime().block_on(download_model(
+            "qwen2.5-0.5b-q4".into(),
+            Some(Arc::new(Stop)),
+        ));
+        assert!(
+            matches!(result, Err(SapientError::Cancelled)),
+            "got {result:?}"
+        );
     }
 
     #[test]

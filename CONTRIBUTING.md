@@ -339,7 +339,8 @@ Run serially (`--test-threads=1`) when multiple tests touch the same cached mode
 
 ```bash
 # sapient-ffi: unit tests, plus ignored real-model e2e tests (download `smollm2-135m-q4`):
-# chat + stream, benchmark-between-chat-turns (pins the prefix-cache invariant), cancel
+# chat + stream, benchmark-between-chat-turns (pins the prefix-cache invariant), cancel,
+# download-only then load, download cancel
 cargo test -p sapient-ffi
 cargo test -p sapient-ffi --release -- --ignored
 

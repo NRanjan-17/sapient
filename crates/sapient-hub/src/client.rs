@@ -62,6 +62,51 @@ impl Default for LoadOptions {
     }
 }
 
+// ── Cache location ───────────────────────────────────────────────────────────
+
+/// The Hub cache directory, exactly where `HubClient` downloads to:
+/// `$HF_HOME/hub` when `HF_HOME` is set (what `sapient-ffi`'s `set_cache_dir`
+/// sets on iOS/Android), else `~/.cache/huggingface/hub`. Anything that looks
+/// for downloaded files must use this; hard-coding the home-dir path watched
+/// the wrong folder on iOS and had no answer on Android (no home directory).
+pub fn hub_cache_dir() -> Option<PathBuf> {
+    hub_cache_dir_from(
+        std::env::var_os("HF_HOME").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
+fn hub_cache_dir_from(hf_home: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    match hf_home {
+        Some(hf_home) if !hf_home.as_os_str().is_empty() => Some(hf_home.join("hub")),
+        _ => Some(home?.join(".cache/huggingface/hub")),
+    }
+}
+
+/// The Hub's model-info endpoint WITH per-file sizes. Without `?blobs=true`
+/// the API returns `siblings[].size = null`, which made `repo_total_bytes`
+/// report 0 for every model (no download percentage anywhere).
+fn model_api_url_with_sizes(repo_id: &str) -> String {
+    format!("https://huggingface.co/api/models/{repo_id}?blobs=true")
+}
+
+/// Total size of the regular files under `path` (0 if it doesn't exist).
+/// Symlinks are not followed, so a repo's `snapshots/` links don't double-count
+/// its `blobs/`.
+pub fn dir_bytes(path: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(t) if t.is_dir() => dir_bytes(&entry.path()),
+            Ok(t) if t.is_file() => entry.metadata().map(|m| m.len()).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
 // ── HubClient ─────────────────────────────────────────────────────────────────
 
 /// Client for the HuggingFace Hub REST API.
@@ -168,8 +213,7 @@ impl HubClient {
     /// its verify-phase heuristic, gated on ≥50%, could never fire).
     pub async fn repo_total_bytes(&self, model_alias: &str) -> Result<u64> {
         let actual_repo = crate::registry::resolve_model_alias(model_alias)?;
-        // Use the HF REST API which returns sibling sizes
-        let url = format!("https://huggingface.co/api/models/{actual_repo}");
+        let url = model_api_url_with_sizes(&actual_repo);
         let client = reqwest::Client::new();
         let mut req = client.get(&url);
         // Forward auth token if available
@@ -231,12 +275,13 @@ impl HubClient {
     }
 
     /// Returns the on-disk blobs directory for a HuggingFace model, used to poll download progress.
-    /// The path follows HF hub cache conventions: `~/.cache/huggingface/hub/models--<org>--<name>/blobs/`.
+    /// The path follows HF hub cache conventions: `<hub cache>/models--<org>--<name>/blobs/`,
+    /// where the hub cache is [`hub_cache_dir`] (honours `HF_HOME`). Downloads in progress
+    /// live here too, as `*.sync.part` files, so its size tracks bytes received.
     pub fn blobs_dir_for_model(model_alias: &str) -> Option<std::path::PathBuf> {
         let actual_repo = crate::registry::resolve_model_alias(model_alias).ok()?;
-        let cache_root = dirs::home_dir()?.join(".cache/huggingface/hub");
         let dir_name = format!("models--{}", actual_repo.replace('/', "--"));
-        Some(cache_root.join(dir_name).join("blobs"))
+        Some(hub_cache_dir()?.join(dir_name).join("blobs"))
     }
 
     // ── Internals ──────────────────────────────────────────────────────────────
@@ -452,5 +497,60 @@ impl HubClient {
         std::fs::read_to_string(path)
             .ok()
             .map(|s| s.trim().to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_api_url_asks_for_file_sizes() {
+        assert_eq!(
+            model_api_url_with_sizes("unsloth/SmolLM2-135M-Instruct-GGUF"),
+            "https://huggingface.co/api/models/unsloth/SmolLM2-135M-Instruct-GGUF?blobs=true"
+        );
+    }
+
+    #[test]
+    fn hub_cache_dir_honours_hf_home() {
+        let home = Some(PathBuf::from("/home/u"));
+        assert_eq!(
+            hub_cache_dir_from(Some(PathBuf::from("/app/Caches/sapient")), home.clone()),
+            Some(PathBuf::from("/app/Caches/sapient/hub"))
+        );
+        assert_eq!(
+            hub_cache_dir_from(None, home.clone()),
+            Some(PathBuf::from("/home/u/.cache/huggingface/hub"))
+        );
+        // An empty HF_HOME means unset, not the current directory.
+        assert_eq!(
+            hub_cache_dir_from(Some(PathBuf::new()), home),
+            Some(PathBuf::from("/home/u/.cache/huggingface/hub"))
+        );
+        // Android: no home directory, but HF_HOME still works.
+        assert_eq!(
+            hub_cache_dir_from(Some(PathBuf::from("/data/app/cache")), None),
+            Some(PathBuf::from("/data/app/cache/hub"))
+        );
+        assert_eq!(hub_cache_dir_from(None, None), None);
+    }
+
+    #[test]
+    fn dir_bytes_counts_files_once_and_skips_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let blobs = root.path().join("blobs");
+        std::fs::create_dir_all(blobs.join("nested")).unwrap();
+        std::fs::write(blobs.join("a"), vec![0u8; 1000]).unwrap();
+        std::fs::write(blobs.join("nested/b.sync.part"), vec![0u8; 24]).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(blobs.join("a"), root.path().join("link")).unwrap();
+        assert_eq!(dir_bytes(&blobs), 1024);
+        assert_eq!(
+            dir_bytes(root.path()),
+            1024,
+            "the symlink is not counted again"
+        );
+        assert_eq!(dir_bytes(&root.path().join("missing")), 0);
     }
 }

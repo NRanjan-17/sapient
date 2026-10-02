@@ -111,6 +111,12 @@ Generated names are idiomatic per language (`chat_stream` → `chatStream`).
   limit against (iOS `phys_footprint`, Linux/Android RSS), its peak, and the
   remaining allowance (iOS `os_proc_available_memory`; `nil` on the
   simulator, which has no limit). Check `available` before loading big models.
+- `download_model(model, listener?)` (async) — download without loading,
+  so the model later loads offline (GGUF tokenizers included);
+  `DownloadListener.onProgress(downloadedBytes, totalBytes) -> Bool` (~4×/s,
+  return `false` to cancel → `SapientError.cancelled`; partial files resume).
+  `model_download_size(model)` (async) — bytes to fetch, for "1.06 GB to
+  download" before starting.
 - `session.benchmark(options, listener?) -> BenchmarkReport` (+
   `benchmarkAsync`) — on-device tok/s, TTFT, prefill rate and peak memory
   with the same definitions as `sapient bench-llm`. See §5.7.
