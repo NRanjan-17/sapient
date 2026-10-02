@@ -920,7 +920,7 @@ not been measured.
 | action expert | 1.6e-2 | 2.6e-3 | 705 | 143 | 322 | 1170 |
 | **all (default)** | **3.5e-2** | **4.0e-3** | 596 | 55 | 328 | **979** |
 
-Yardstick: LeRobot's own default precision runs the VLM in bf16. On the same inputs it
+Yardstick: LeRobot's own default precision runs the VLM and the action expert in bf16. On the same inputs it
 moves the chunk by max 1.4e-2, RMS 1.9e-3 from the f32 reference. The all-Q8_0 default
 is about 2× that.
 

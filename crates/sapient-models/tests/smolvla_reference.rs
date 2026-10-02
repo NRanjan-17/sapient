@@ -198,7 +198,7 @@ fn smolvla_matches_lerobot_reference() {
 
 /// Action error and time of each Q8_0 choice, against the f32 LeRobot reference.
 ///
-/// The yardstick is LeRobot's own default precision: it runs the VLM in bf16,
+/// The yardstick is LeRobot's own default precision: it runs the VLM and the expert in bf16,
 /// which moves the action chunk by `BF16_MAX` (max abs, measured with the same
 /// inputs) from the f32 reference.
 #[test]

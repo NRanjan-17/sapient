@@ -343,7 +343,12 @@ impl SmolVla {
         let in_dim = w.shape().dims()[1];
         let xt = if x.len() == rows * in_dim {
             Tensor::from_f32(x, Shape::new([rows, in_dim]))
-        } else if rows > 0 && x.len() % rows == 0 && x.len() / rows < in_dim && in_dim % 32 == 0 {
+        } else if rows > 0
+            && x.len() % rows == 0
+            && x.len() / rows < in_dim
+            && in_dim - x.len() / rows < 32
+            && in_dim % 32 == 0
+        {
             // Zero-padded Q8_0 weight (see `prepare`): pad the activations too.
             let k = x.len() / rows;
             let mut padded = vec![0.0f32; rows * in_dim];
