@@ -14,6 +14,8 @@ mod llama;
 mod mlx_engine;
 mod phi;
 mod siglip;
+/// SmolVLA vision-language-action policy (flow-matching action expert).
+mod smolvla;
 /// SNAC codec-decoder (Phase 6d, LM-codec TTS) — drives `sapient speak`.
 mod snac;
 #[cfg(feature = "wgpu")]
@@ -38,6 +40,7 @@ pub use llama::LlamaForward;
 pub use mlx_engine::MlxForwardEngine;
 pub use phi::PhiForward;
 pub use siglip::{SiglipConfig, SiglipVision};
+pub use smolvla::{PrefixCache, SmolVla, SmolVlaConfig};
 pub use snac::{normalize_snac_weights, orpheus_codes_to_snac, SnacDecoder};
 #[cfg(feature = "wgpu")]
 pub use wgpu_engine::WgpuForwardEngine;
