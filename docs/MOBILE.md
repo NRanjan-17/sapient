@@ -247,8 +247,11 @@ first `load()` call.
 See [`sdks/typescript/README.md`](../sdks/typescript/README.md). Short version:
 
 ```bash
-# on your Mac / server / Pi
+# on your Mac / server / Pi (keeps running)
 sapient serve
+```
+
+```bash
 # in your app
 npm install @openhorizon-labs/sapient
 ```
