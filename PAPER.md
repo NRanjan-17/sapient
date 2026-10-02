@@ -82,8 +82,8 @@ Apple M4, 16 GB, CPU backend, 2026-10-02, `benchmarks/2026-10-02-m4-baseline.jso
 | Peak RSS, Qwen2.5-1.5B, MB | 1177 | — |
 | SmolVLM-256M image encode, p50 / max / stdev, ms | 606 / 659 / 30.8 | — |
 | Binary size (CPU build), MB | 52.4 | — |
-| Perplexity, Qwen2.5-1.5B Q4_K_M (wikitext-2, 5100 tokens) | 11.762 | 11.720 |
-| Perplexity, Llama-3.2-1B Q4_K_M | 16.508 | 16.259 |
+| Perplexity, Qwen2.5-1.5B Q4_K_M (wikitext-2, 5100 tokens) | 11.730 | 11.720 |
+| Perplexity, Llama-3.2-1B Q4_K_M | 16.328 | 16.259 |
 
 Run-to-run spread on this laptop is up to about 8% (a run minutes earlier read
 71.2 tok/s on Llama-3.2-1B and 556 ms vision p50). Raspberry Pi 5 vision encode,
@@ -97,5 +97,9 @@ hand-timed the same day: 3.5 s (see `docs/BENCHMARKS.md`).
 - No WASM build and no `no_std` core exist.
 - Quality: perplexity is implemented (`sapient eval-ppl`); task success is not. The
   Metal build's quality is unmeasured (needs Xcode's Metal Toolchain to build).
-- Sapient's perplexity is 0.4–1.5% worse than llama.cpp's on the same files; the cause
-  of the larger Llama-1B gap is not yet isolated.
+- Sapient's perplexity is within 0.1–0.4% of llama.cpp's on the same files
+  (`benchmarks/2026-10-02-m4-quality-ablation.json`). Int8 activation quantisation costs
+  up to 0.8% on Qwen2.5-1.5B relative to f32 activations; the Q8_0 KV cache costs
+  nothing measurable. Llama-1B's residual +0.28% is unexplained.
+- The first quality numbers (iteration 2) were wrong because of two protocol bugs; they
+  are superseded, and the episode is logged in `LOOP_LOG.md`.

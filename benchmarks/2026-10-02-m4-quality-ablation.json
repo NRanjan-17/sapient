@@ -1,0 +1,108 @@
+{
+  "date": "2026-10-02",
+  "machine": "Apple M4, 16 GB, CPU backend",
+  "text": "wikitext-2-raw wiki.test.raw",
+  "protocol": "20 non-overlapping 512-token chunks, second half scored; token stream identical to llama-perplexity (leading BOS for models that have one)",
+  "llama_cpp_build": "0.5.0 (build 11146, commit 7fe450e19), -ngl 0 -t 4",
+  "sapient": "loop/003-quality-ablation (BOS detection fix, chunk-offset fix)",
+  "models": {
+    "openhorizon/qwen2.5-1.5b-q4": {
+      "llama_cpp": {
+        "perplexity": 11.7199,
+        "stderr": 0.44945
+      },
+      "default (Q8_K int8 activations)": {
+        "perplexity": 11.7303,
+        "stderr": 0.4493,
+        "vs_llama_cpp_pct": 0.09
+      },
+      "per-32 int8 activations (SAPIENT_Q8K_ACT=0)": {
+        "perplexity": 11.6741,
+        "stderr": 0.4468,
+        "vs_llama_cpp_pct": -0.39,
+        "paired_vs_default": {
+          "pct": -0.479,
+          "pct_lo": -0.825,
+          "pct_hi": -0.132,
+          "z": -2.7,
+          "verdict": "B better"
+        }
+      },
+      "f32 activations (SAPIENT_F32_ACT=1)": {
+        "perplexity": 11.638,
+        "stderr": 0.4448,
+        "vs_llama_cpp_pct": -0.7,
+        "paired_vs_default": {
+          "pct": -0.787,
+          "pct_lo": -1.128,
+          "pct_hi": -0.444,
+          "z": -4.48,
+          "verdict": "B better"
+        }
+      },
+      "default, scored through the KV cache (--cached)": {
+        "perplexity": 11.7261,
+        "stderr": 0.449,
+        "vs_llama_cpp_pct": 0.05,
+        "paired_vs_default": {
+          "pct": -0.035,
+          "pct_lo": -0.539,
+          "pct_hi": 0.472,
+          "z": -0.14,
+          "verdict": "no significant difference"
+        }
+      }
+    },
+    "openhorizon/llama-3.2-1b-q4": {
+      "llama_cpp": {
+        "perplexity": 16.2589,
+        "stderr": 0.66384
+      },
+      "default (Q8_K int8 activations)": {
+        "perplexity": 16.3278,
+        "stderr": 0.6706,
+        "vs_llama_cpp_pct": 0.42
+      },
+      "per-32 int8 activations (SAPIENT_Q8K_ACT=0)": {
+        "perplexity": 16.2956,
+        "stderr": 0.6699,
+        "vs_llama_cpp_pct": 0.23,
+        "paired_vs_default": {
+          "pct": -0.197,
+          "pct_lo": -0.404,
+          "pct_hi": 0.01,
+          "z": -1.86,
+          "verdict": "no significant difference"
+        }
+      },
+      "f32 activations (SAPIENT_F32_ACT=1)": {
+        "perplexity": 16.3039,
+        "stderr": 0.6707,
+        "vs_llama_cpp_pct": 0.28,
+        "paired_vs_default": {
+          "pct": -0.146,
+          "pct_lo": -0.341,
+          "pct_hi": 0.049,
+          "z": -1.47,
+          "verdict": "no significant difference"
+        }
+      },
+      "default, scored through the KV cache (--cached)": {
+        "perplexity": 16.3288,
+        "stderr": 0.6706,
+        "vs_llama_cpp_pct": 0.43,
+        "paired_vs_default": {
+          "pct": 0.006,
+          "pct_lo": -0.222,
+          "pct_hi": 0.235,
+          "z": 0.05,
+          "verdict": "no significant difference"
+        }
+      }
+    }
+  },
+  "notes": [
+    "Paired intervals compare per-token log-likelihoods of two Sapient runs over identical tokens (scripts/ppl_paired.py). llama.cpp is compared on the aggregate only (no per-token dump).",
+    "Supersedes the Llama-3.2-1B and Qwen rows of 2026-10-02-m4-quality.json, which were measured before two protocol bugs were fixed."
+  ]
+}

@@ -5,11 +5,22 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 🐛 Qwen prompts no longer start with a stray `<s>`
+
+- The tokenizer wrapper chose its BOS by name; Qwen2.5's vocabulary has `<s>` as an
+  ordinary token and the model has no BOS, so every Qwen prompt carried a stray token.
+  BOS detection now requires a special added token (two regression tests).
+- `sapient eval-ppl`: chunk boundaries now match llama.cpp for models with a BOS; new
+  `--cached` and `--dump-nll`; `scripts/ppl_paired.py` gives paired intervals.
+  Corrected quality numbers (Apple M4 CPU): Qwen2.5-1.5B 11.730 vs llama.cpp 11.720;
+  Llama-3.2-1B 16.328 vs 16.259. The earlier figures in this file are superseded.
+- `SAPIENT_F32_ACT=1` (diagnostic) forces f32 activations in the quantized matmuls.
+
 ### 🎯 Perplexity gate
 
 - `sapient eval-ppl` (hidden) scores a text file with llama.cpp's perplexity protocol,
-  so quality can be compared on the same GGUF. First numbers (Apple M4 CPU, wikitext-2):
-  Qwen2.5-1.5B 11.76 vs llama.cpp 11.72; Llama-3.2-1B 16.51 vs 16.26.
+  so quality can be compared on the same GGUF. (The first numbers published here were
+  taken with two protocol bugs and are superseded by the entry above.)
 - `scripts/bench_loop.py` now records a `quality` section.
 
 ### 🔁 Optimisation-loop scaffolding

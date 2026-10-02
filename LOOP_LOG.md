@@ -144,3 +144,87 @@ embedding/output matrix is Q6_K). Caveat to check first: `eval-ppl` uses `forwar
 gate. If a suspect explains most of the gap, fix it when the
 speed cost is within noise; otherwise record it. Also add a paired per-token interval to
 `eval-ppl` so small differences can be called.
+
+---
+
+## Iteration 3 — 2026-10-02 — quality ablation; two protocol bugs and one real tokenizer bug
+
+**Research.** Question from iteration 2: where does Sapient's perplexity gap to
+llama.cpp come from? Technique: ablation with paired per-token statistics — switch off
+one quantisation at a time and compare log-likelihoods token by token (a paired test is
+far tighter than two aggregate perplexities). Sources: llama.cpp keeps K/V in f16 and
+quantises activations per 256 (`block_q8_K`); standard paired-difference statistics.
+
+**Corrections to iteration 2 (its numbers were wrong).**
+1. *Chunk offset.* llama.cpp tokenises the file with the leading BOS and then cuts
+   chunks; `eval-ppl` cut BOS-less tokens, so for models with a BOS every chunk sat one
+   token later. The Llama-3.2-1B comparison was therefore not on identical tokens. The
+   reported +1.53% gap was mostly this; the real figure is +0.42%.
+2. *Stray BOS on Qwen* (below) put a wrong first token in every Qwen chunk. The reported
+   +0.36% gap is really +0.09%.
+`benchmarks/2026-10-02-m4-quality.json` is left as measured and marked superseded.
+
+**Bug found and fixed (affects real chat, not just the benchmark).** `SapientTokenizer`
+picked its BOS by name (`<s>`, `<bos>`, `<|begin_of_text|>`). Qwen2.5's vocabulary
+contains `<s>` as an ordinary BPE token (id 128245) and the model has no BOS, so every
+Qwen prompt — `chat`, `serve`, `run` — was sent with a stray `<s>` in front. BOS
+detection now requires a *special added* token. Two regression tests
+(`plain_vocab_token_named_like_bos_is_not_bos`, `special_added_bos_is_detected_and_prepended`).
+Llama's `<|begin_of_text|>` (special) is unaffected; verified against the tokenizer files.
+
+**Change.**
+- Tokenizer BOS fix (above).
+- `eval-ppl`: chunk-offset fix; `--cached` (score through the KV cache, as decode does);
+  `--dump-nll <file>` (per-token log-likelihoods).
+- `scripts/ppl_paired.py` (written by a Haiku subagent, reviewed): paired comparison of
+  two dumps with a 95% interval.
+- `SAPIENT_F32_ACT=1`: diagnostic switch that forces the f32-activation reference
+  kernels, including the i8mm paths (the first version of the switch missed those and
+  that run was discarded).
+
+**Measured** (Apple M4 CPU, wikitext-2, 20 × 512-token chunks, 5100 tokens;
+`benchmarks/2026-10-02-m4-quality-ablation.json`).
+
+| Perplexity | Qwen2.5-1.5B Q4_K_M | Llama-3.2-1B Q4_K_M |
+|---|---:|---:|
+| llama.cpp | 11.720 | 16.259 |
+| Sapient default (Q8_K int8 activations) | 11.730 (+0.09%) | 16.328 (+0.42%) |
+| Sapient, per-32 int8 activations | 11.674 (−0.39%) | 16.296 (+0.23%) |
+| Sapient, f32 activations | 11.638 (−0.70%) | 16.304 (+0.28%) |
+| Sapient default, through the KV cache | 11.726 | 16.329 |
+
+Paired, relative to Sapient default (95% interval):
+
+| Switch | Qwen2.5-1.5B | Llama-3.2-1B |
+|---|---|---|
+| per-32 activation scales | −0.48% (−0.83 .. −0.13), significant | −0.20% (−0.40 .. +0.01), not significant |
+| f32 activations | −0.79% (−1.13 .. −0.44), significant | −0.15% (−0.34 .. +0.05), not significant |
+| KV cache in the path | −0.04% (−0.54 .. +0.47), none | +0.01% (−0.22 .. +0.24), none |
+
+What this says:
+- **Sapient's default is at llama.cpp parity on Qwen (+0.09%) and +0.42% on Llama-1B.**
+- **The Q8_0 KV cache costs nothing measurable** on either model. Suspect (1) is cleared.
+- **Int8 activation quantisation is the measurable cost on Qwen:** the default (per-256
+  scales) is 0.79% worse than f32 activations and 0.48% worse than per-32 scales. On
+  Llama-1B neither difference is significant.
+- Llama-1B's remaining +0.28% to llama.cpp is present even with f32 activations, so it
+  is not activation quantisation. Unexplained (candidates: Q6_K paths, f32 reduction order).
+
+**Decision.** Merge on green CI. Correctness improves (a wrong token is no longer sent to
+every Qwen prompt; the gate now scores the same tokens as llama.cpp); no speed path
+changes by default (`SAPIENT_F32_ACT` is off unless set). The default activation format
+stays Q8_K: it was adopted for a measured +6–45% decode gain and now has a measured
+quality price of ≤0.5% on one model and nothing significant on the other. That is a
+trade-off, recorded here, not a regression introduced by this change.
+
+**Negative results.**
+- The first `SAPIENT_F32_ACT` run was invalid (the switch did not cover the i8mm prefill
+  kernels); discarded and re-run.
+- No throughput or latency metric improved this iteration.
+
+**Next hypothesis (iteration 4).** Back to the paper's critical path: the first rung of
+VLA support. SmolVLA is built on SmolVLM2-500M; Sapient loads only SmolVLM-256M today.
+Add SmolVLM2-500M to `sapient see` (same Idefics3 family, larger SigLIP + SmolLM2-360M),
+verify it against the existing vision gates, and record its encode / prefill latency and
+jitter with `scripts/bench_loop.py`. If the checkpoint needs architecture changes beyond
+configuration, log what and scope them.

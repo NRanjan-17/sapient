@@ -343,6 +343,17 @@ enum Commands {
         #[arg(long, default_value = "20")]
         chunks: usize,
 
+        /// Write each scored token's negative log-likelihood (nats, one per line)
+        /// to this file, for paired comparisons between two runs
+        /// (`scripts/ppl_paired.py`).
+        #[arg(long)]
+        dump_nll: Option<std::path::PathBuf>,
+
+        /// Score through the KV cache (as decode does) instead of the cache-free
+        /// path, so the cache's quantization is part of what is measured.
+        #[arg(long)]
+        cached: bool,
+
         /// Generation backend: auto | cpu | metal | wgpu.
         #[arg(short, long, default_value = "auto")]
         backend: String,
@@ -617,10 +628,25 @@ async fn dispatch(cli: Cli) -> Result<()> {
             file,
             ctx,
             chunks,
+            dump_nll,
+            cached,
             backend,
             mmap,
             json,
-        } => eval_ppl_command(model.as_str(), &file, ctx, chunks, &backend, mmap, json).await,
+        } => {
+            eval_ppl_command(
+                model.as_str(),
+                &file,
+                ctx,
+                chunks,
+                dump_nll.as_deref(),
+                cached,
+                &backend,
+                mmap,
+                json,
+            )
+            .await
+        }
         Commands::BenchLlm {
             model,
             prompt,
@@ -2571,11 +2597,14 @@ fn token_nll(logits: &[f32], target: u32) -> f64 {
     mx + sum.ln() - logits[target as usize] as f64
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn eval_ppl_command(
     model: &str,
     file: &std::path::Path,
     ctx: usize,
     max_chunks: usize,
+    dump_nll: Option<&std::path::Path>,
+    cached: bool,
     backend: &str,
     force_mmap: bool,
     json_out: bool,
@@ -2594,14 +2623,20 @@ async fn eval_ppl_command(
     }
 
     let tok = pipeline.tokenizer();
-    let tokens = tok.encode_ids(&text, false)?;
-    // The model's BOS, if its tokenizer adds one: each chunk starts with it
-    // (llama.cpp overwrites the chunk's first token the same way).
+    // The model's BOS, if its tokenizer adds one.
     let bos = {
         let with = tok.encode("a")?;
         let without = tok.encode_ids("a", false)?;
         (with.len() > without.len()).then(|| with[0])
     };
+    // llama.cpp tokenizes the file WITH the leading BOS and then cuts chunks, so
+    // every chunk boundary sits one token earlier than in a BOS-less stream.
+    // Match that exactly — otherwise the two tools score different tokens. Each
+    // chunk's first token is additionally overwritten with BOS below.
+    let mut tokens = tok.encode_ids(&text, false)?;
+    if let Some(b) = bos {
+        tokens.insert(0, b);
+    }
 
     let available = tokens.len() / ctx;
     let n_chunks = if max_chunks == 0 {
@@ -2621,6 +2656,7 @@ async fn eval_ppl_command(
     let first = ctx / 2;
     let started = Instant::now();
     let (mut nll, mut nll2, mut count) = (0.0f64, 0.0f64, 0usize);
+    let mut per_token: Vec<f64> = Vec::new();
     for c in 0..n_chunks {
         let mut chunk = tokens[c * ctx..(c + 1) * ctx].to_vec();
         if let Some(b) = bos {
@@ -2630,7 +2666,14 @@ async fn eval_ppl_command(
             let mut eng = engine
                 .lock()
                 .map_err(|e| anyhow::anyhow!("engine lock poisoned: {e}"))?;
-            eng.forward_all_logits(&chunk)
+            if cached {
+                // Same forward pass, but K/V go through the KV cache (Q8_0 when
+                // head_dim is a multiple of 32) and attention reads them back.
+                eng.reset_cache();
+                eng.forward_all_logits_cached(&chunk)
+            } else {
+                eng.forward_all_logits(&chunk)
+            }
         })?;
         // Score the second half: position j predicts token j + 1.
         for j in first..ctx - 1 {
@@ -2638,6 +2681,9 @@ async fn eval_ppl_command(
             nll += v;
             nll2 += v * v;
             count += 1;
+            if dump_nll.is_some() {
+                per_token.push(v);
+            }
         }
         if !json_out {
             eprintln!(
@@ -2646,6 +2692,12 @@ async fn eval_ppl_command(
                 (nll / count as f64).exp()
             );
         }
+    }
+
+    if let Some(path) = dump_nll {
+        let body: String = per_token.iter().map(|v| format!("{v:.9}\n")).collect();
+        std::fs::write(path, body)
+            .with_context(|| format!("failed to write {}", path.display()))?;
     }
 
     let mean = nll / count as f64;
@@ -2662,6 +2714,7 @@ async fn eval_ppl_command(
             "file": file.display().to_string(),
             "ctx": ctx,
             "chunks": n_chunks,
+            "kv_cache_path": cached,
             "tokens_scored": count,
             "bos_token": bos,
             "mean_nll": mean,
