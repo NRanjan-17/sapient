@@ -8,7 +8,7 @@
 > portability, curated registry, modern CLI, and edge-specific automation
 > (auto-pick quantization for available RAM, auto CPU/GPU offload, single static binary).
 
-## Where we are (v0.6.0)
+## Where we are (v0.6.1)
 - ✅ **Sparse MoE (Mixtral-class first cut)** — the credible "big models on edge"
   path: a 47B-A13B (Mixtral-8x7B) decodes at ~13B bandwidth cost on 32 GB+ devices
   (big Mac / Jetson Thor). Implemented as a per-layer `Ffn::{Dense, Moe}` branch

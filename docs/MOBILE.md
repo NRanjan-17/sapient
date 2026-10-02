@@ -202,7 +202,7 @@ repositories {
     maven { url = uri("https://raw.githubusercontent.com/openhorizon-labs/sapient-android/main") }
 }
 // app/build.gradle.kts
-dependencies { implementation("so.openhorizon:sapient:0.6.0") }
+dependencies { implementation("so.openhorizon:sapient:0.6.1") }
 ```
 
 The AAR's POM carries JNA and kotlinx-coroutines as transitive deps, so

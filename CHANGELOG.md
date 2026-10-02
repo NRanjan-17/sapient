@@ -3,7 +3,13 @@
 Release notes for SAPIENT. The release workflow publishes each version's
 section below as the GitHub release body.
 
-## [Unreleased]
+## [0.6.1] - 2026-10-02
+
+**A correctness and measurement release.** Qwen prompts no longer carry a stray
+`<s>` token, image encoding is about twice as fast with bit-identical output
+(Raspberry Pi 5: 7.3 s → 3.5 s per image), and the project now has a perplexity
+gate that shows Sapient within 0.1–0.4% of llama.cpp on the same model files.
+`openhorizon-labs/sapient` is the canonical download location.
 
 ### 🐛 Qwen prompts no longer start with a stray `<s>`
 

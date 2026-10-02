@@ -6,7 +6,8 @@
     <a href="https://github.com/SkidGod4444/sapient/actions"><img src="https://github.com/SkidGod4444/sapient/actions/workflows/ci.yml/badge.svg" alt="CI"/></a>
     <img src="https://img.shields.io/badge/license-AGPL--3.0%20or%20commercial-blue" alt="License"/>
     <img src="https://img.shields.io/badge/rust-1.82%2B-orange" alt="MSRV"/>
-    <img src="https://img.shields.io/github/downloads/openhorizon-labs/sapient/total" alt="Downloads"/>
+    <img src="https://img.shields.io/github/downloads/SkidGod4444/sapient/total?label=downloads%20(source%20repo)" alt="Downloads from the source repo"/>
+    <img src="https://img.shields.io/github/downloads/openhorizon-labs/sapient/total?label=downloads%20(openhorizon-labs)" alt="Downloads from openhorizon-labs"/>
   </p>
   <p>
     <b>macOS · Linux · Windows</b> &nbsp;|&nbsp; No Python · No Docker · No CUDA required &nbsp;|&nbsp; <a href="https://sapient.openhorizon.so">sapient.openhorizon.so</a>
@@ -341,7 +342,7 @@ repositories {
 }
 // app/build.gradle.kts — JNA + kotlinx-coroutines arrive as transitive deps:
 dependencies {
-    implementation("so.openhorizon:sapient:0.6.0")
+    implementation("so.openhorizon:sapient:0.6.1")
 }
 ```
 
@@ -457,7 +458,7 @@ spoken language; `--language <code>` forces it and `--translate` outputs English
 
 | Alias | Family | Size | Notes |
 |---|---|---|---|
-| `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; ~1.3 s to first token on an M4 with v0.6.0 (about 0.6 s with the 2026-10 kernels, not yet in a release) |
+| `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; about 0.6 s to first token on an M4 (v0.6.1; was ~1.3 s on v0.6.0) |
 | `openhorizon/gemma-3-4b` | Gemma3 multimodal | 4B | |
 | `openhorizon/medgemma-4b` | Gemma3 medical | 4B | X-ray / dermatology / pathology (gated) |
 
@@ -525,13 +526,12 @@ v0.5.0 on long prompts.
 
 ### Vision (time to encode one image, lower is better)
 
-| SmolVLM-256M, one 512² image | Before | With the 2026-10 kernels |
+| SmolVLM-256M, one 512² image | Before | v0.6.1 |
 |---|---:|---:|
 | Raspberry Pi 5 | 7.3 s (v0.5.2 release) | **3.5 s** |
 | Apple M4 | 1140 ms (v0.6.0-level) | **~555 ms** |
 
-Five kernel changes, output bit-identical; merged after v0.6.0, so not yet in a
-release binary. MedGemma-4B on an M4 CPU (2026-07, before these kernels): 33 s vision
+Five kernel changes in v0.6.1, output bit-identical. MedGemma-4B on an M4 CPU (2026-07, before these kernels): 33 s vision
 tower, then 15 tok/s decode.
 
 ### Speech
