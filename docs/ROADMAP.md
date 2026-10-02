@@ -59,8 +59,14 @@
   + numeric grid-orientation probe. v1: single global 512² image (no sub-image
   splitting yet). MedGemma runs on the Gemma3 engine above. **SmolVLM2-500M**
   (`smolvlm2-500m`, the VLM SmolVLA is built on) loads through the same path
-  (2026-10-02) — the first rung toward VLA support; next rungs: truncated backbone +
-  robot-state input, then the flow-matching action expert. Tower perf
+  (2026-10-02) — the first rung toward VLA support. **SmolVLA runs (2026-10-02):**
+  `sapient act` — VLM prefix pass that keeps per-layer K/V, the 16-layer action expert
+  (alternating self/cross attention), 10-step flow matching → 50×32 action chunk;
+  matches the LeRobot reference to 4e-6 (`tests/smolvla_reference.rs`, `vla_e2e`).
+  First cut is f32 on CPU, ~2.0 s/chunk on M4. Open VLA rungs: quantized linears with a
+  measured action-error budget, latency + jitter benchmark on M4 and Pi 5, skipping the
+  unused last-layer prefix work, asynchronous chunk execution, a fine-tuned checkpoint
+  with real normalization statistics, catalog entry. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five
   bit-identical kernel changes; open: the Q8_0 per-block f32 scale tail, the
   softmax exponentials, thread scaling — the path toward control-rate vision for VLA-class models.

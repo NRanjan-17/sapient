@@ -376,6 +376,16 @@ after (`scripts/bench_loop.py` runs it, and llama.cpp on the same file, for you)
 Vision gates: `SAPIENT_VLM_MODEL=smolvlm2-500m cargo test -p sapient-generate --release
 --test vlm_e2e --test vlm_geometry_probe -- --ignored` runs them on another model.
 
+SmolVLA (`sapient act`) is gated against LeRobot reference outputs stored in
+`crates/sapient-models/tests/fixtures/smolvla_base.safetensors`. Both gates are ignored
+(they need the 0.9 GB checkpoint): `SAPIENT_SMOLVLA_DIR=<dir with model.safetensors>
+cargo test -p sapient-models --release --test smolvla_reference -- --ignored --nocapture`
+checks every stage, and `cargo test -p sapient-generate --release --test vla_e2e --
+--ignored` checks the full pipeline. Regenerate the fixture with
+`scripts/gen_smolvla_fixture.py` (needs `pip install "lerobot[smolvla]"` in a throwaway
+virtual environment — LeRobot is not a dependency of this repository). A change to the
+engine that moves the action chunk must report the new error against the fixture.
+
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
 kernel changes on a small-cache ARM board as well as an M-series Mac: a loop that

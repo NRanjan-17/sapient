@@ -189,6 +189,33 @@ enum Commands {
         max_tokens: usize,
     },
 
+    /// Predict robot actions from camera image(s) + an instruction (SmolVLA).
+    Act {
+        /// Camera image file(s), in the policy's camera order.
+        #[arg(required = true)]
+        images: Vec<PathBuf>,
+
+        /// What the robot should do, e.g. "pick up the red cube".
+        #[arg(short, long)]
+        task: String,
+
+        /// Robot state as comma-separated numbers (default: all zeros).
+        #[arg(short, long)]
+        state: Option<String>,
+
+        /// SmolVLA checkpoint (Hugging Face repo id).
+        #[arg(short, long, default_value = sapient_generate::SMOLVLA_REPO)]
+        model: String,
+
+        /// Seed for the flow-matching start noise.
+        #[arg(long, default_value_t = 0)]
+        seed: u64,
+
+        /// Print the whole action chunk and timings as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Synthesise speech from text with a TTS model (text-to-speech).
     #[command(visible_aliases = ["tts", "say"])]
     Speak {
@@ -579,6 +606,14 @@ async fn dispatch(cli: Cli) -> Result<()> {
             model,
             max_tokens,
         } => see_command(&image, &prompt, &model, max_tokens).await,
+        Commands::Act {
+            images,
+            task,
+            state,
+            model,
+            seed,
+            json,
+        } => act_command(&images, &task, state.as_deref(), &model, seed, json).await,
         Commands::Speak {
             model,
             text,
@@ -1746,6 +1781,92 @@ async fn see_command(
             stats.gen_tokens,
             stats.decode_ms,
             stats.decode_tps()
+        ))
+        .dim()
+    );
+    Ok(())
+}
+
+async fn act_command(
+    images: &[PathBuf],
+    task: &str,
+    state: Option<&str>,
+    model: &str,
+    seed: u64,
+    json: bool,
+) -> Result<()> {
+    for image in images {
+        if !image.exists() {
+            anyhow::bail!("image not found: {}", image.display());
+        }
+    }
+    let loading = ui::spinner(format!("loading {model}…"));
+    let vla = sapient_generate::VlaPipeline::from_pretrained(model).await?;
+    ui::spinner_success(loading, format!("{model} ready"));
+
+    let state: Vec<f32> = match state {
+        Some(s) => s
+            .split(',')
+            .map(|v| v.trim().parse::<f32>())
+            .collect::<std::result::Result<_, _>>()
+            .with_context(|| format!("--state must be comma-separated numbers, got {s:?}"))?,
+        None => vec![0.0; vla.state_dim()],
+    };
+
+    let thinking = ui::spinner("predicting actions…");
+    let images = images.to_vec();
+    let task_owned = task.to_string();
+    let chunk = tokio::task::spawn_blocking(move || -> Result<_> {
+        let pixels = images
+            .iter()
+            .map(|p| vla.preprocess_image(p))
+            .collect::<Result<Vec<_>>>()?;
+        vla.predict(&pixels, &task_owned, &state, seed)
+    })
+    .await??;
+    thinking.finish_and_clear();
+
+    let t = &chunk.timing;
+    if json {
+        let rows: Vec<&[f32]> = (0..chunk.steps).map(|i| chunk.row(i)).collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "actions": rows,
+                "steps": chunk.steps,
+                "dim": chunk.dim,
+                "robot_units": chunk.robot_units,
+                "prefix_tokens": t.prefix_tokens,
+                "vision_ms": t.vision_ms,
+                "prefix_ms": t.prefix_ms,
+                "denoise_ms": t.denoise_ms,
+                "total_ms": t.total_ms,
+            })
+        );
+    } else {
+        for i in 0..chunk.steps {
+            let row: Vec<String> = chunk.row(i).iter().map(|v| format!("{v:8.4}")).collect();
+            println!("{i:3}  {}", row.join(" "));
+        }
+    }
+    if !chunk.robot_units {
+        ui::hint_err(
+            "this checkpoint ships no action statistics: values are in the model's \
+             normalized space, not robot units (fine-tuned policies carry them)",
+        );
+    }
+    eprintln!(
+        "{}",
+        console::style(format!(
+            "  ⚡ {} actions × {} dims · vision {:.0} ms · prefix {:.0} ms ({} tok) · \
+             denoise {:.0} ms · total {:.0} ms",
+            chunk.steps,
+            chunk.dim,
+            t.vision_ms,
+            t.prefix_ms,
+            t.prefix_tokens,
+            t.denoise_ms,
+            t.total_ms
         ))
         .dim()
     );

@@ -150,6 +150,19 @@ sapient see chart.png -p "Summarize this chart." --model gemma-3-4b
 sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (gated: sapient login)
 ```
 
+**Robot actions (experimental, after v0.6.1)**
+
+```bash
+# SmolVLA: camera image(s) + instruction + robot state -> the next 50 actions
+sapient act camera.jpg --task "pick up the red cube" --state "0.1,0.2,-0.3,0.4,0,0.5"
+sapient act top.jpg wrist.jpg --task "pick up the red cube" --json   # two cameras, JSON output
+```
+
+`sapient act` runs [SmolVLA](https://huggingface.co/lerobot/smolvla_base) (450M) and matches
+LeRobot's reference actions to 4e-6 on the same inputs. About 2 s per 50-action chunk
+on an Apple M4 CPU with one camera, not yet optimized. The base checkpoint is meant to
+be fine-tuned for a robot; it prints actions in the model's normalized space.
+
 **Voice conversation**
 
 A streaming loop: speech is transcribed while you are still talking, the reply starts

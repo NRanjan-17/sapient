@@ -53,6 +53,7 @@ pub mod sentence;
 pub mod speak;
 pub mod speculative;
 pub mod transcribe;
+pub mod vla;
 pub mod vlm;
 
 pub use converse::{ConversePipeline, LiveStt, NoopTts, Tts, Turn};
@@ -76,4 +77,5 @@ pub use sentence::SentenceChunker;
 pub use speak::{SpeakPipeline, DEFAULT_ORPHEUS_VOICE, ORPHEUS_VOICES};
 pub use speculative::SpeculativePipeline;
 pub use transcribe::{TranscribeOptions, TranscribePipeline};
+pub use vla::{ActionChunk, VlaPipeline, VlaTiming, SMOLVLA_REPO};
 pub use vlm::{VlmPipeline, VlmStats};
