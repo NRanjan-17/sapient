@@ -57,7 +57,10 @@
   SmolVLM-256M (SigLIP tower + pixel-shuffle connector on new `forward/siglip.rs`,
   embedding-splice into the existing Llama engine). Golden test (red fixture → "Red")
   + numeric grid-orientation probe. v1: single global 512² image (no sub-image
-  splitting yet). MedGemma runs on the Gemma3 engine above. Tower perf
+  splitting yet). MedGemma runs on the Gemma3 engine above. **SmolVLM2-500M**
+  (`smolvlm2-500m`, the VLM SmolVLA is built on) loads through the same path
+  (2026-10-02) — the first rung toward VLA support; next rungs: truncated backbone +
+  robot-state input, then the flow-matching action expert. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five
   bit-identical kernel changes; open: the Q8_0 per-block f32 scale tail, the
   softmax exponentials, thread scaling — the path toward control-rate vision for VLA-class models.

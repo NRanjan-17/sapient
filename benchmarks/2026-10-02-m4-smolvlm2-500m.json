@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-02T08:53:34+05:30",
+  "machine": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "perf_threads": 4,
+    "cpu": "Apple M4"
+  },
+  "sapient": {
+    "version": "sapient 0.6.1",
+    "git": "0ac78b3",
+    "dirty": true,
+    "binary_bytes": 52471792,
+    "backend": "cpu"
+  },
+  "llm": {},
+  "quality": {},
+  "vision": {
+    "model": "smolvlm2-500m",
+    "runs": 10,
+    "encode_ms_runs": [
+      558,
+      675,
+      562,
+      548,
+      567,
+      552,
+      574,
+      588,
+      574,
+      567
+    ],
+    "encode_ms_p50": 567.0,
+    "encode_ms_max": 675,
+    "encode_ms_min": 548,
+    "encode_ms_stdev": 34.6,
+    "prefill_ms_p50": 113.5,
+    "stage_ms_p50": {
+      "norm": 25.0,
+      "qkv": 99.5,
+      "attn": 136.5,
+      "out_proj": 33.5,
+      "fc1": 117.0,
+      "gelu": 41.0,
+      "fc2": 96.0
+    }
+  },
+  "notes": [
+    "SmolVLM2-500M with load-time Q8_0 quantization of its F32 checkpoint (branch feat/smolvlm2-500m).",
+    "Before that change, same machine and image: vision encode 693-712 ms, prefill 328-332 ms (77-79 tokens), peak RSS 4.29 GB; after: peak RSS 4.18 GB.",
+    "An earlier run of this file, taken while the test suite was still finishing, had runs [587, 645, 571, 553, 557, 571, 615, 1318, 549, 579] (one 1318 ms outlier); this file is the re-run on a quiet machine."
+  ]
+}

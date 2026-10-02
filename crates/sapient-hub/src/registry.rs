@@ -425,6 +425,17 @@ pub const CATALOG: &[SupportedModel] = &[
         gated: false,
         extra_aliases: &["smolvlm-256m", "smolvlm", "smolvlm-256m-instruct"],
     },
+    // SmolVLM2: same Idefics3 layout (config model_type "smolvlm"), the same
+    // SigLIP-B/16 512² tower, a SmolLM2-360M-class backbone. This is the VLM
+    // that SmolVLA is built on.
+    SupportedModel {
+        alias: "openhorizon/smolvlm2-500m",
+        repo_id: "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+        family: "SmolVLM",
+        params: "500M",
+        gated: false,
+        extra_aliases: &["smolvlm2-500m", "smolvlm2"],
+    },
 ];
 
 /// Resolve a VLM alias (or raw repo id) to its Hugging Face repo. Catalog
