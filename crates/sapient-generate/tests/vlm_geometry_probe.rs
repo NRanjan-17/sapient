@@ -26,9 +26,10 @@ fn grid_norms(vlm: &VlmPipeline, pixels: &[f32]) -> Vec<f32> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "downloads SmolVLM-256M"]
 async fn visual_token_grid_matches_image_geometry() {
-    let vlm = VlmPipeline::from_pretrained("smolvlm-256m")
-        .await
-        .expect("load");
+    // SAPIENT_VLM_MODEL runs the same gate against another Idefics3-family
+    // model (e.g. smolvlm2-500m); the default is the 256M model.
+    let model = std::env::var("SAPIENT_VLM_MODEL").unwrap_or_else(|_| "smolvlm-256m".into());
+    let vlm = VlmPipeline::from_pretrained(&model).await.expect("load");
     let s = 512usize;
 
     // Vertical split: black LEFT, white RIGHT → columns 0..4 vs 4..8 differ.

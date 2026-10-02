@@ -145,6 +145,7 @@ sapient speak orpheus-3b "The quick brown fox." --voice leo -o fox.wav
 
 ```bash
 sapient see photo.jpg -p "What's in this picture?"                   # SmolVLM-256M (default)
+sapient see photo.jpg -p "What's in this picture?" --model smolvlm2-500m
 sapient see chart.png -p "Summarize this chart." --model gemma-3-4b
 sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (gated: sapient login)
 ```
@@ -460,6 +461,7 @@ spoken language; `--language <code>` forces it and `--translate` outputs English
 | Alias | Family | Size | Notes |
 |---|---|---|---|
 | `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; about 0.6 s to first token on an M4 (v0.6.1; was ~1.3 s on v0.6.0) |
+| `openhorizon/smolvlm2-500m` | SmolVLM2 (SigLIP + SmolLM2-360M-class) | 500M | Stronger than the 256M; the base model SmolVLA is built on (after v0.6.1) |
 | `openhorizon/gemma-3-4b` | Gemma3 multimodal | 4B | |
 | `openhorizon/medgemma-4b` | Gemma3 medical | 4B | X-ray / dermatology / pathology (gated) |
 

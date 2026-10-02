@@ -46,6 +46,14 @@ pub fn kv_cache_ctx(model_max: usize) -> usize {
 /// - Must not be a norm weight, bias, embedding table, or lm_head
 ///   (these have different access patterns or are tiny).
 pub fn should_quantize_online(name: &str, t: &Tensor) -> bool {
+    is_quantizable_linear(name, t) && matches!(t.dtype(), DType::F16 | DType::BF16)
+}
+
+/// The shape/name half of [`should_quantize_online`], without the dtype test:
+/// a 2-D linear weight that is a whole number of Q8_0 blocks and is not a
+/// norm, bias, embedding, lm_head or MoE router gate. Loaders that also want
+/// to quantize F32 checkpoints (the VLM path) use this directly.
+pub fn is_quantizable_linear(name: &str, t: &Tensor) -> bool {
     let dims = t.shape().dims();
     if dims.len() != 2 {
         return false;
@@ -59,10 +67,7 @@ pub fn should_quantize_online(name: &str, t: &Tensor) -> bool {
     // flip under Q8_0 rounding — and llama.cpp keeps it full precision, so skip
     // it too. (Dense `mlp.gate_proj` does NOT contain "block_sparse_moe.gate".)
     let skip = ["norm", "bias", "embed", "lm_head", "block_sparse_moe.gate"];
-    if skip.iter().any(|s| name.contains(s)) {
-        return false;
-    }
-    matches!(t.dtype(), DType::F16 | DType::BF16)
+    !skip.iter().any(|s| name.contains(s))
 }
 
 /// Quantize a 2-D F16/BF16 weight tensor to Q8_0 in one pass.

@@ -20,7 +20,10 @@ async fn solid_red_image_is_identified() {
     let img = image::RgbImage::from_pixel(512, 512, image::Rgb([216, 32, 32]));
     img.save(&path).expect("writing fixture image");
 
-    let mut vlm = VlmPipeline::from_pretrained("smolvlm-256m")
+    // SAPIENT_VLM_MODEL runs the same gate against another Idefics3-family
+    // model (e.g. smolvlm2-500m); the default is the 256M model.
+    let model = std::env::var("SAPIENT_VLM_MODEL").unwrap_or_else(|_| "smolvlm-256m".into());
+    let mut vlm = VlmPipeline::from_pretrained(&model)
         .await
         .expect("loading smolvlm-256m");
     let answer = vlm

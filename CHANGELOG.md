@@ -18,6 +18,16 @@ section below as the GitHub release body.
 - `misaki-rs` is vendored under `vendor/misaki-rs` (MIT) with those changes; see its
   `VENDORED.md` and `NOTICE`.
 
+### 👁️ SmolVLM2-500M
+
+- `sapient see --model smolvlm2-500m`: the SmolVLM2 family loads through the existing
+  Idefics3 path (config `model_type: "smolvlm"`). It is the VLM that SmolVLA is built on.
+- Its checkpoint is full F32 (1.9 GB); the SmolVLM loader now quantizes F32 linears to
+  Q8_0 at load, as the engines already do for F16/BF16. Apple M4: image encode
+  ~700 → 567 ms, 77-token prefill 328 → ~115 ms, answers byte-identical on the test images.
+- The vision gates (`vlm_e2e`, `vlm_geometry_probe`) accept `SAPIENT_VLM_MODEL` and pass
+  on both models; `scripts/bench_loop.py --vlm-model` picks the model to time.
+
 ## [0.6.1] - 2026-10-02
 
 **A correctness and measurement release.** Qwen prompts no longer carry a stray

@@ -166,6 +166,22 @@ per-32-block f32 scale combine is the same tail the Q8_K activation format remov
 from the K-quant kernels. That, plus better multi-thread scaling (1 → 10 threads is
 only ~4×), is the next rung.
 
+### SmolVLM2-500M (2026-10-02, Apple M4 CPU)
+
+`sapient see --model smolvlm2-500m`, same image and harness
+(`scripts/bench_loop.py --vlm-model smolvlm2-500m`, 10 runs after one warm-up;
+`benchmarks/2026-10-02-m4-smolvlm2-500m.json`):
+
+| | F32 checkpoint as shipped | + Q8_0 at load |
+|---|---:|---:|
+| Image encode | 693–712 ms | **567 ms** (p50; min 548, max 675) |
+| Prefill, 77–79 tokens | 328–332 ms | **~115 ms** |
+| Peak RSS | 4.29 GB | 4.18 GB |
+
+Replies are byte-identical before and after on three test images, and both vision
+gates pass. Peak RSS barely moves because the F32 checkpoint is fully loaded before
+it is quantized. Not measured on a Pi.
+
 ---
 
 ## v0.5.3 head-to-head refresh (Apple M4, 2026-07-09)
