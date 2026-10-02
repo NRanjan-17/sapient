@@ -28,7 +28,6 @@ section below as the GitHub release body.
 - `scripts/bench_loop.py` — one-command reproducible baseline (LLM decode / TTFT /
   peak RSS, llama.cpp on the same GGUF, vision encode p50/max/stdev, binary size);
   first result file in `benchmarks/`.
-- `LOOP_LOG.md`, `NOVELTY.md`, `PAPER.md` — iteration log, prior-art map and paper plan.
 - Fixed: `llama-3.2-3b` and `mistral-7b` are now marked gated in `sapient models`.
 
 ### 📦 `openhorizon-labs/sapient` is the canonical download location

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproducible baseline benchmark for the optimisation loop (LOOP_LOG.md / PAPER.md).
+"""Reproducible baseline benchmark: one command, one JSON result file.
 
 Measures, on the machine it runs on, and writes one JSON file:
 

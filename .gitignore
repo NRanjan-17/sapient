@@ -12,3 +12,8 @@ dist/
 # Gradle state from the android-maven publishing scaffold
 scripts/android-maven/.gradle/
 scripts/android-maven/build/
+
+# Local working notes — never commit (iteration log, prior-art notes, paper plan)
+LOOP_LOG.md
+NOVELTY.md
+PAPER.md
