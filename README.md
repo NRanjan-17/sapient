@@ -175,7 +175,7 @@ sapient see chart.png -p "Summarize this chart." --model gemma-3-4b
 sapient see xray.png -p "Describe findings." --model medgemma-4b
 ```
 
-**Robot actions (experimental, after v0.6.1)**
+**Robot actions (experimental, v0.6.2)**
 
 ```bash
 # SmolVLA: camera image(s) + instruction + robot state -> the next 50 actions
@@ -287,7 +287,7 @@ sapient serve --port 8080 --speculative
 | `POST /v1/completions` | Raw text completion |
 | `POST /v1/audio/transcriptions` | OpenAI-compatible speech-to-text (multipart audio upload) |
 | `POST /v1/audio/speech` | OpenAI-compatible text-to-speech → WAV (Kokoro, 54 voices) |
-| `POST /v1/actions` | Robot actions from camera frames + instruction + state (SmolVLA; after v0.6.1) |
+| `POST /v1/actions` | Robot actions from camera frames + instruction + state (SmolVLA; v0.6.2) |
 | `GET /v1/health` | Liveness check |
 
 `/v1/chat/completions` accepts OpenAI-style image content parts as **base64 data URIs**,
@@ -424,7 +424,7 @@ repositories {
 }
 // app/build.gradle.kts — JNA + kotlinx-coroutines arrive as transitive deps:
 dependencies {
-    implementation("so.openhorizon:sapient:0.6.1")
+    implementation("so.openhorizon:sapient:0.6.2")
 }
 ```
 
@@ -541,7 +541,7 @@ spoken language; `--language <code>` forces it and `--translate` outputs English
 | Alias | Family | Size | Notes |
 |---|---|---|---|
 | `openhorizon/smolvlm-256m` | SmolVLM (SigLIP + SmolLM2) | 256M | Default; about 0.6 s to first token on an M4 (v0.6.1; was ~1.3 s on v0.6.0) |
-| `openhorizon/smolvlm2-500m` | SmolVLM2 (SigLIP + SmolLM2-360M-class) | 500M | Stronger than the 256M; the base model SmolVLA is built on (after v0.6.1) |
+| `openhorizon/smolvlm2-500m` | SmolVLM2 (SigLIP + SmolLM2-360M-class) | 500M | Stronger than the 256M; the base model SmolVLA is built on (v0.6.2) |
 | `openhorizon/gemma-3-4b` | Gemma3 multimodal | 4B | |
 | `openhorizon/medgemma-4b` | Gemma3 medical | 4B | X-ray / dermatology / pathology (gated) |
 
@@ -595,9 +595,9 @@ rows were re-measured independently on v0.6.0 (2026-10-01) and the ratios held.
 - **TTFT.** Ollama's ~130–150 ms figure is a `total − eval` proxy, not a streamed
   first token, so the TTFT ranking is indicative.
 - **Quality.** No perplexity or eval-suite comparison has been run yet.
-- **Binary size.** v0.6.0/v0.6.1 ship a ~50 MB CPU build (about 17 MB on main, after
-  Kokoro's dictionaries moved out of the binary); the `-metal` build is ~60 MB plus
-  an 88 MB `mlx.metallib`.
+- **Binary size.** v0.6.2 ships a ~17 MB CPU build (v0.6.0/v0.6.1: ~50 MB; Kokoro's
+  dictionaries moved out of the binary). The `-metal` build was ~60 MB plus an 88 MB
+  `mlx.metallib` at v0.6.1; it shrinks by the same dictionaries, not yet re-measured.
 
 </details>
 

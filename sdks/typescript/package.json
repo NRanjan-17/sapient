@@ -1,6 +1,6 @@
 {
   "name": "@openhorizon-labs/sapient",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "TypeScript SDK for SAPIENT — talk to a local `sapient serve` from Node.js or React Native, with streaming chat",
   "license": "GPL-3.0-only",
   "repository": {
