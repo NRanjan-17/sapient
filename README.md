@@ -183,7 +183,8 @@ scores 0.011. None of the modes changes the model's error against the recorded a
 
 `--simulate --hz 10` runs a control loop with asynchronous chunking (the next chunk is
 computed while the robot executes the current one) and reports how often the robot
-would wait: none at 30 Hz on an M4, none at 5 Hz on a Pi 5. Details:
+would wait: none at 30 Hz on an M4, none at 5 Hz on a Pi 5. When to compute the next
+chunk is chosen automatically from the measured latency (`--threshold auto`, default). Details:
 `docs/BENCHMARKS.md`.
 The base checkpoint is meant to be fine-tuned for a robot; it prints actions in the
 model's normalized space.

@@ -244,10 +244,12 @@ enum Commands {
         #[arg(long, default_value_t = 30.0)]
         seconds: f64,
 
-        /// Request the next chunk when at most this fraction of a chunk is
-        /// still queued (0 = only when empty, i.e. sequential).
-        #[arg(long, default_value_t = 0.5)]
-        threshold: f32,
+        /// When to request the next chunk: `auto` (from measured latency —
+        /// just in time when inference is fast, synchronous when it is slower
+        /// than a chunk) or a fraction of a chunk still queued (0 = wait for
+        /// each chunk).
+        #[arg(long, default_value = "auto")]
+        threshold: String,
 
         /// How a new chunk combines with still-queued actions: latest | average.
         #[arg(long, default_value = "latest")]
@@ -672,7 +674,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     other => anyhow::bail!("--aggregate must be latest or average, got {other:?}"),
                 };
                 let cfg = sapient_generate::AsyncConfig {
-                    threshold,
+                    threshold: threshold.parse()?,
                     aggregate,
                     seed,
                 };
@@ -1937,7 +1939,7 @@ async fn act_simulate_command(
         cfg.threshold
     ));
     let task_owned = task.to_string();
-    let threshold = cfg.threshold;
+    let threshold = cfg.threshold.to_string();
     let report = tokio::task::spawn_blocking(move || {
         sapient_generate::simulate_async_actions(
             policy,
@@ -1975,6 +1977,8 @@ async fn act_simulate_command(
                 "chunks": st.chunks, "dropped_actions": st.dropped,
                 "latency_ms": {"mean": mean, "p50": pct(0.5), "p95": pct(0.95), "max": pct(1.0)},
                 "latencies_ms": ms,
+                "latency_ticks": st.latency_ticks,
+                "last_trigger": st.last_trigger,
             })
         );
     } else {
@@ -1995,6 +1999,12 @@ async fn act_simulate_command(
             pct(0.95),
             pct(1.0),
             st.dropped
+        );
+        let max_ticks = st.latency_ticks.iter().max().copied().unwrap_or(0);
+        println!(
+            "threshold {threshold}: last request at ≤ {} queued actions{} · latency up to {max_ticks} ticks",
+            st.last_trigger,
+            if st.last_trigger == 0 { " (synchronous)" } else { "" }
         );
     }
     Ok(())

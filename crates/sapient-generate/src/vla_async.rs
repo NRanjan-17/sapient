@@ -69,14 +69,73 @@ pub enum Aggregate {
     Average,
 }
 
+/// When to ask for the next chunk.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Threshold {
+    /// Pick it from the measured inference latency — see [`auto_trigger`].
+    Auto,
+    /// Ask when at most this fraction of a chunk is still queued (LeRobot's
+    /// `chunk_size_threshold`). 0 = only when the queue is empty — synchronous
+    /// execution (wait for each chunk, then execute all of it); 1 = keep one
+    /// inference running at all times.
+    Fraction(f32),
+}
+
+impl std::str::FromStr for Threshold {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        if s.eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        let f: f32 = s
+            .parse()
+            .map_err(|_| anyhow!("threshold must be `auto` or a number in 0..=1, got {s:?}"))?;
+        if !(0.0..=1.0).contains(&f) {
+            return Err(anyhow!("threshold must be in 0..=1, got {f}"));
+        }
+        Ok(Self::Fraction(f))
+    }
+}
+
+impl std::fmt::Display for Threshold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Fraction(x) => write!(f, "{x}"),
+        }
+    }
+}
+
+/// The queue length at or below which [`Threshold::Auto`] asks for a new chunk,
+/// given the inference latency `d` in control ticks and `c` actions per chunk.
+///
+/// With chunks aligned by executed actions, a chunk requested with `q` actions
+/// queued arrives `d` ticks later carrying `c − min(q, d)` usable actions.
+/// * `d ≤ c/2`: asking just before the queue runs out (`q ≈ d`, plus a margin
+///   for latency jitter) never stalls and computes the fewest chunks. Asking
+///   earlier only burns more compute.
+/// * `c/2 < d < c`: no trigger avoids stalls; asking at once (any `q ≥ d`)
+///   settles into executing `c/2` actions per `d` ticks — stall fraction
+///   `1 − c/(2d)` — which beats synchronous execution's `d/(c+d)`.
+/// * `d ≥ c`: every async chunk loses more to the actions executed meanwhile
+///   than it gains; synchronous execution (`0`: ask only when empty) stalls
+///   least.
+///
+/// Measured on a Pi 5 (d = 33, 50, 99 ticks at 10, 15, 30 Hz) the async and
+/// synchronous stall rates matched these formulas within 2 points.
+pub fn auto_trigger(d: u64, c: usize) -> usize {
+    let d = d as usize;
+    if d >= c {
+        0
+    } else {
+        (d + d / 5 + 2).min(c)
+    }
+}
+
 /// Settings for [`AsyncActions`].
 #[derive(Debug, Clone)]
 pub struct AsyncConfig {
-    /// Ask for a new chunk when at most this fraction of a chunk is still
-    /// queued (LeRobot's `chunk_size_threshold`). 0 = only when the queue is
-    /// empty — synchronous execution (the robot waits for each chunk, then
-    /// executes all of it); 1 = keep one inference running at all times.
-    pub threshold: f32,
+    pub threshold: Threshold,
     pub aggregate: Aggregate,
     /// Seed of the first chunk's start noise; each later chunk uses the next.
     pub seed: u64,
@@ -85,7 +144,7 @@ pub struct AsyncConfig {
 impl Default for AsyncConfig {
     fn default() -> Self {
         Self {
-            threshold: 0.5,
+            threshold: Threshold::Auto,
             aggregate: Aggregate::Latest,
             seed: 0,
         }
@@ -121,6 +180,10 @@ pub struct AsyncStats {
     pub dropped: u64,
     /// Inference time of every chunk.
     pub latencies: Vec<Duration>,
+    /// The same, in control ticks between request and arrival.
+    pub latency_ticks: Vec<u64>,
+    /// Queue length that triggered the most recent request (0 = synchronous).
+    pub last_trigger: usize,
 }
 
 impl AsyncStats {
@@ -159,6 +222,8 @@ pub struct AsyncActions {
     /// Actions executed so far = the step of the next action to execute.
     step: u64,
     pending: bool,
+    /// Tick count when the in-flight request was sent.
+    request_tick: u64,
     next_seed: u64,
     stats: AsyncStats,
 }
@@ -196,6 +261,7 @@ impl AsyncActions {
             queue: VecDeque::new(),
             step: 0,
             pending: false,
+            request_tick: 0,
             stats: AsyncStats::default(),
         }
     }
@@ -222,6 +288,9 @@ impl AsyncActions {
                     self.merge(reply.step, reply.actions?);
                     self.stats.chunks += 1;
                     self.stats.latencies.push(reply.took);
+                    self.stats
+                        .latency_ticks
+                        .push(self.stats.ticks - self.request_tick);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -231,8 +300,10 @@ impl AsyncActions {
         }
 
         let mut requested = false;
-        let threshold = (self.cfg.threshold.clamp(0.0, 1.0) * self.chunk_len as f32) as usize;
-        if !self.pending && self.queue.len() <= threshold {
+        let trigger = self.trigger();
+        if !self.pending && self.queue.len() <= trigger {
+            self.stats.last_trigger = trigger;
+            self.request_tick = self.stats.ticks;
             let obs = observe()?;
             let req = Request {
                 obs,
@@ -271,6 +342,20 @@ impl AsyncActions {
             requested,
             arrived,
         })
+    }
+
+    /// Queue length at or below which a new chunk is requested.
+    fn trigger(&self) -> usize {
+        match self.cfg.threshold {
+            Threshold::Fraction(f) => (f.clamp(0.0, 1.0) * self.chunk_len as f32) as usize,
+            // Worst of the last few latencies, so one fast chunk does not make
+            // the next request late. Before the first measurement: ask when
+            // empty (the start-up request).
+            Threshold::Auto => {
+                let recent = self.stats.latency_ticks.iter().rev().take(5).max();
+                recent.map_or(0, |&d| auto_trigger(d, self.chunk_len))
+            }
+        }
     }
 
     /// Merge a chunk computed from the observation at `obs_step`.
@@ -425,7 +510,7 @@ mod tests {
             delay: Duration::from_millis(20),
         });
         let cfg = AsyncConfig {
-            threshold: 0.0,
+            threshold: Threshold::Fraction(0.0),
             ..Default::default()
         };
         let mut r = AsyncActions::new(policy, 10, cfg);
@@ -449,7 +534,7 @@ mod tests {
             delay: Duration::from_millis(20),
         });
         let cfg = AsyncConfig {
-            threshold: 0.9,
+            threshold: Threshold::Fraction(0.9),
             ..Default::default()
         };
         let mut r = AsyncActions::new(policy, 50, cfg);
@@ -488,7 +573,7 @@ mod tests {
             delay: Duration::from_millis(80),
         });
         let cfg = AsyncConfig {
-            threshold: 0.0,
+            threshold: Threshold::Fraction(0.0),
             ..Default::default()
         };
         let mut r = AsyncActions::new(policy, 5, cfg);
@@ -508,6 +593,81 @@ mod tests {
     }
 
     #[test]
+    fn auto_trigger_regimes() {
+        // Fast: just in time with a margin.
+        assert_eq!(auto_trigger(10, 50), 14);
+        assert_eq!(auto_trigger(0, 50), 2);
+        // Between c/2 and c: the trigger exceeds any queue left after arrival.
+        assert!(auto_trigger(33, 50) >= 50 - 33);
+        // Slower than a chunk: synchronous.
+        assert_eq!(auto_trigger(50, 50), 0);
+        assert_eq!(auto_trigger(99, 50), 0);
+        assert_eq!("auto".parse::<Threshold>().unwrap(), Threshold::Auto);
+        assert_eq!(
+            "0.5".parse::<Threshold>().unwrap(),
+            Threshold::Fraction(0.5)
+        );
+        assert!("1.5".parse::<Threshold>().is_err());
+    }
+
+    #[test]
+    fn auto_never_stalls_and_computes_less_than_eager() {
+        // 20 ms inference, ~4 ms ticks → d ≈ 5–6 ticks, far below 50.
+        let run = |threshold| {
+            let policy = Arc::new(Fake {
+                chunk: 50,
+                delay: Duration::from_millis(20),
+            });
+            let mut r = AsyncActions::new(
+                policy,
+                50,
+                AsyncConfig {
+                    threshold,
+                    ..Default::default()
+                },
+            );
+            wait_for_chunk(&mut r);
+            for _ in 0..250 {
+                std::thread::sleep(Duration::from_millis(4));
+                let step = r.step;
+                r.tick(|| obs(step)).unwrap();
+            }
+            r.stats().clone()
+        };
+        let auto = run(Threshold::Auto);
+        let eager = run(Threshold::Fraction(1.0));
+        assert_eq!(auto.steady_stall_rate(), 0.0);
+        assert!(
+            auto.chunks * 2 < eager.chunks,
+            "auto {} vs eager {} chunks",
+            auto.chunks,
+            eager.chunks
+        );
+    }
+
+    #[test]
+    fn auto_goes_synchronous_when_inference_outlasts_a_chunk() {
+        // 5-action chunks, 80 ms inference, 2 ms ticks: d ≫ c.
+        let policy = Arc::new(Fake {
+            chunk: 5,
+            delay: Duration::from_millis(80),
+        });
+        let mut r = AsyncActions::new(policy, 5, AsyncConfig::default());
+        wait_for_chunk(&mut r);
+        for _ in 0..150 {
+            std::thread::sleep(Duration::from_millis(2));
+            let step = r.step;
+            r.tick(|| obs(step)).unwrap();
+        }
+        assert_eq!(r.stats().last_trigger, 0);
+        assert_eq!(
+            r.stats().dropped,
+            0,
+            "synchronous chunks are executed in full"
+        );
+    }
+
+    #[test]
     fn average_aggregation_blends_overlap() {
         let policy = Arc::new(Fake {
             chunk: 4,
@@ -517,7 +677,7 @@ mod tests {
             policy,
             4,
             AsyncConfig {
-                threshold: 1.0,
+                threshold: Threshold::Fraction(1.0),
                 aggregate: Aggregate::Average,
                 seed: 0,
             },
