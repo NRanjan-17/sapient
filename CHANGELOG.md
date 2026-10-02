@@ -5,6 +5,16 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-02
+
+**Robot actions, a smaller binary, and faster GPU decode.** `sapient act` runs the
+SmolVLA vision-language-action policy (camera images + an instruction + robot state →
+the next 50 actions), matches LeRobot to 2e-6 on real robot frames, and is served over
+HTTP at `POST /v1/actions`. A chunk takes 0.6 s on an Apple M4 CPU and 3.3 s on a
+Raspberry Pi 5. The default CPU binary drops from ~50 MB to ~17 MB, the 8-bit matrix
+multiply is faster with bit-identical results, wgpu decode is up to 2.5× faster, and
+`sapient serve` now explains an unavailable `--backend` instead of returning HTTP 500.
+
 ### 📦 Binary 52 MB → 17 MB
 
 - Two-thirds of the binary was Kokoro's English pronunciation dictionaries and
