@@ -90,6 +90,31 @@ fn model_api_url_with_sizes(repo_id: &str) -> String {
     format!("https://huggingface.co/api/models/{repo_id}?blobs=true")
 }
 
+/// Files of `repo_id`'s cached `main` snapshot (paths relative to it), or
+/// empty if the repo was never downloaded. Layout:
+/// `<hub>/models--org--name/refs/main` holds the commit hash, and
+/// `snapshots/<hash>/` holds the files (symlinks into `blobs/`).
+fn cached_repo_files(hub: &std::path::Path, repo_id: &str) -> Vec<String> {
+    let repo = hub.join(format!("models--{}", repo_id.replace('/', "--")));
+    let Ok(commit) = std::fs::read_to_string(repo.join("refs/main")) else {
+        return Vec::new();
+    };
+    let snapshot = repo.join("snapshots").join(commit.trim());
+    let mut files = Vec::new();
+    let mut pending = vec![snapshot.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if let Ok(relative) = path.strip_prefix(&snapshot) {
+                files.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    files
+}
+
 /// Total size of the regular files under `path` (0 if it doesn't exist).
 /// Symlinks are not followed, so a repo's `snapshots/` links don't double-count
 /// its `blobs/`.
@@ -339,16 +364,26 @@ impl HubClient {
     }
 
     async fn fetch_weights(&self, repo: &ApiRepo, model_id: &str) -> Result<Vec<PathBuf>> {
-        let repo_info = repo
-            .info()
-            .await
-            .context("Failed to fetch model file listing from HuggingFace Hub")?;
-
-        let mut filenames: Vec<String> = repo_info
-            .siblings
-            .iter()
-            .map(|s| s.rfilename.clone())
-            .collect();
+        let mut filenames: Vec<String> = match repo.info().await {
+            Ok(info) => info.siblings.iter().map(|s| s.rfilename.clone()).collect(),
+            // Offline (or the Hub is down): a model downloaded earlier is still
+            // in the cache, and `repo.get` serves cached files without the
+            // network, so choose among those instead of failing the load.
+            Err(e) => {
+                let cached = hub_cache_dir()
+                    .map(|hub| cached_repo_files(&hub, model_id))
+                    .unwrap_or_default();
+                if cached.is_empty() {
+                    return Err(e)
+                        .context("Failed to fetch model file listing from HuggingFace Hub");
+                }
+                debug!(
+                    "Hub unreachable ({e}); using {} cached files of {model_id}",
+                    cached.len()
+                );
+                cached
+            }
+        };
         filenames.sort();
 
         for fmt in &self.opts.formats {
@@ -503,6 +538,26 @@ impl HubClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_repo_files_lists_the_main_snapshot() {
+        let hub = tempfile::tempdir().unwrap();
+        let repo = hub.path().join("models--org--name");
+        std::fs::create_dir_all(repo.join("refs")).unwrap();
+        std::fs::write(repo.join("refs/main"), "abc123\n").unwrap();
+        let snapshot = repo.join("snapshots/abc123");
+        std::fs::create_dir_all(snapshot.join("sub")).unwrap();
+        std::fs::write(snapshot.join("model-Q4_K_M.gguf"), b"x").unwrap();
+        std::fs::write(snapshot.join("sub/extra.json"), b"{}").unwrap();
+        // An older snapshot is ignored: only refs/main counts.
+        std::fs::create_dir_all(repo.join("snapshots/old")).unwrap();
+        std::fs::write(repo.join("snapshots/old/stale.gguf"), b"x").unwrap();
+
+        let mut files = cached_repo_files(hub.path(), "org/name");
+        files.sort();
+        assert_eq!(files, vec!["model-Q4_K_M.gguf", "sub/extra.json"]);
+        assert!(cached_repo_files(hub.path(), "org/missing").is_empty());
+    }
 
     #[test]
     fn model_api_url_asks_for_file_sizes() {

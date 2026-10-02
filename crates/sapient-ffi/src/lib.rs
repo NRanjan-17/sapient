@@ -1157,6 +1157,36 @@ mod tests {
         LlmSession::load(model, GenerationOptions::default()).expect("load after download");
     }
 
+    /// After `download_model`, loading must not need the network: point the
+    /// Hub at a dead address (what being offline looks like to hf-hub and
+    /// the tokenizers crate, which both read HF_ENDPOINT) and load. Run alone
+    /// — it changes a process-wide variable:
+    /// `cargo test -p sapient-ffi --release -- --ignored e2e_downloaded_model_loads_offline --test-threads=1`
+    #[test]
+    #[ignore = "downloads a model — network + disk; mutates HF_ENDPOINT"]
+    fn e2e_downloaded_model_loads_offline_smollm2() {
+        let model = "smollm2-135m-q4".to_string();
+        runtime()
+            .block_on(download_model(model.clone(), None))
+            .expect("download while online");
+
+        std::env::set_var("HF_ENDPOINT", "http://127.0.0.1:9");
+        let offline = LlmSession::load(
+            model,
+            GenerationOptions {
+                max_tokens: 8,
+                ..GenerationOptions::default()
+            },
+        );
+        std::env::remove_var("HF_ENDPOINT");
+
+        let session = offline.expect("a downloaded model loads with the Hub unreachable");
+        assert!(!session
+            .chat("Say hi.".into())
+            .expect("offline turn")
+            .is_empty());
+    }
+
     #[test]
     #[ignore = "downloads a model — network + disk"]
     fn e2e_download_can_be_cancelled() {
