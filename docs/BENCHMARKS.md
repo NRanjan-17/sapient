@@ -900,6 +900,51 @@ f16 rounding (~5e-4 relative), gated by `wgpu_f16_kv_cache_matches_f32_kv_cache`
 
 ---
 
+## SmolVLA action chunks (2026-10-02)
+
+`lerobot/smolvla_base` (450M), Apple M4 (10 cores), CPU, one 512² camera frame, 13
+language tokens, 78-token prefix, 10 flow-matching steps, 50×32 action chunk. Best of 3
+runs in one process, model already loaded. Source: `smolvla_quantized_action_error` in
+`crates/sapient-models/tests/smolvla_reference.rs`.
+
+Action error is the difference from LeRobot's PyTorch implementation run in f32 on CPU
+with the same inputs and start noise, in the model's normalized action units (the
+reference chunk has RMS 0.41). **One observation only** — the error over a dataset has
+not been measured.
+
+| Linears stored as Q8_0 | Max error | RMS error | Vision | Prefix | Denoise | Total |
+|---|---|---|---|---|---|---|
+| none (f32) | 4.2e-6 | 8.3e-7 | 689 ms | 145 ms | 925 ms | 1759 ms |
+| vision tower | 2.1e-2 | 2.5e-3 | 554 | 145 | 919 | 1619 |
+| VLM text layers | 2.5e-2 | 4.8e-3 | 690 | 55 | 925 | 1670 |
+| action expert | 1.6e-2 | 2.6e-3 | 705 | 143 | 322 | 1170 |
+| **all (default)** | **3.5e-2** | **4.0e-3** | 596 | 55 | 328 | **979** |
+
+Yardstick: LeRobot's own default precision runs the VLM and the action expert in bf16. On the same inputs it
+moves the chunk by max 1.4e-2, RMS 1.9e-3 from the f32 reference. The all-Q8_0 default
+is about 2× that.
+
+Notes:
+
+- With f32 activations forced (`SAPIENT_F32_ACT=1`) the vision and VLM errors barely
+  change (1.8e-2, 1.6e-2), so they come from 8-bit weight rounding, not int8 activations.
+  The expert's error drops from 1.6e-2 to 5.7e-3 in that mode.
+- The expert's 720-wide matrices are not a multiple of the 32-element Q8_0 block. They
+  are zero-padded to 736 columns at load; without that they stay f32 and denoise is
+  753 ms instead of 328 ms.
+- Skipping the last prefix layer's attention and MLP (only its K/V are read) and
+  projecting the cross-attention K/V once per observation do not change the output.
+- Fewer flow-matching steps (all-Q8_0): 5 steps → denoise 163 ms, max error 0.24, RMS
+  0.024; 3 steps → 98 ms, max 0.47, RMS 0.054. Far larger than the quantization error.
+- Where the 0.93 s goes (`sapient act`, default): vision 57%, denoise 37%, prefix 6%.
+  Denoise is 79% linears (`SAPIENT_VLA_TIMING=1`).
+- `sapient act` end to end, including load: 2.5 s wall, peak RSS 1.83 GB (f32: 2.1 s,
+  2.07 GB). Peak is at load, while the BF16 checkpoint and the converted weights
+  coexist. Served (`POST /v1/actions`, policy resident): 0.89 s per call, HTTP overhead
+  about 2 ms; two cameras 1.46 s.
+
+---
+
 ## Binary & deployment
 
 | Metric | SAPIENT | Ollama | mlx-lm |

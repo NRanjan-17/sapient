@@ -27,6 +27,7 @@ use std::time::Instant;
 use anyhow::{anyhow, bail, Context, Result};
 use sapient_core::Tensor;
 use sapient_hub::HubClient;
+pub use sapient_models::forward::SmolVlaQuant;
 use sapient_models::forward::{SmolVla, SmolVlaConfig};
 use sapient_tokenizers::{SapientTokenizer, TokenizerOptions};
 
@@ -95,7 +96,18 @@ impl VlaPipeline {
     /// Download (or reuse cached) a SmolVLA checkpoint by Hugging Face repo id
     /// and load it. The tokenizer comes from the VLM the policy was built on
     /// (`vlm_model_name` in its config).
+    ///
+    /// Linear weights are stored as Q8_0 ([`SmolVlaQuant::ALL`]): about 1.8×
+    /// faster than f32 and a fraction of the memory, at an action error of the
+    /// same order as LeRobot's own default bf16 precision (see
+    /// `docs/BENCHMARKS.md`). Use [`from_pretrained_with`](Self::from_pretrained_with)
+    /// and [`SmolVlaQuant::NONE`] for the exact f32 path.
     pub async fn from_pretrained(repo: &str) -> Result<Self> {
+        Self::from_pretrained_with(repo, SmolVlaQuant::ALL).await
+    }
+
+    /// [`from_pretrained`](Self::from_pretrained) with an explicit precision.
+    pub async fn from_pretrained_with(repo: &str, quant: SmolVlaQuant) -> Result<Self> {
         let client = HubClient::new()?;
         let files = client
             .download_files(repo, &["config.json", "model.safetensors"])
@@ -115,7 +127,7 @@ impl VlaPipeline {
             .download_files(repo, &[NORMALIZER_FILE, UNNORMALIZER_FILE])
             .await
             .unwrap_or_default();
-        Self::from_files(&files[0], &files[1], &tok[0], &stats)
+        Self::from_files(&files[0], &files[1], &tok[0], &stats, quant)
     }
 
     /// Load from already-downloaded files. `stats` are the checkpoint's
@@ -125,6 +137,7 @@ impl VlaPipeline {
         weights: &Path,
         tokenizer: &Path,
         stats: &[PathBuf],
+        quant: SmolVlaQuant,
     ) -> Result<Self> {
         let cfg = read_config(config)?;
         let usize_of = |key: &str, default: usize| -> usize {
@@ -148,7 +161,7 @@ impl VlaPipeline {
 
         let tensors = sapient_io::load_safetensors(weights)
             .map_err(|e| anyhow!("loading {weights:?}: {e}"))?;
-        let model = SmolVla::from_weights(model_cfg, tensors)?;
+        let model = SmolVla::from_weights_quant(model_cfg, tensors, quant)?;
         let tokenizer = SapientTokenizer::from_file(tokenizer, TokenizerOptions::default())?;
 
         let feature_dim = |section: &str, key: &str, default: usize| -> usize {
@@ -225,6 +238,18 @@ impl VlaPipeline {
         Ok(ids)
     }
 
+    /// [`preprocess_image`](Self::preprocess_image) from encoded bytes
+    /// (PNG/JPEG/…) — the server decodes frames in memory.
+    pub fn preprocess_image_bytes(&self, bytes: &[u8]) -> Result<Vec<f32>> {
+        let img = image::load_from_memory(bytes).context("decoding image bytes")?;
+        Ok(self.preprocess_rgb(&img.to_rgb8()))
+    }
+
+    /// Flow-matching steps the checkpoint was configured with.
+    pub fn default_steps(&self) -> usize {
+        self.model.config().num_steps
+    }
+
     /// Predict one action chunk; the start noise is drawn from `seed`.
     pub fn predict(
         &self,
@@ -238,6 +263,22 @@ impl VlaPipeline {
         self.predict_with_noise(images, task, state, &noise)
     }
 
+    /// [`predict`](Self::predict) with an explicit number of flow-matching
+    /// steps (`None` = the checkpoint's own). Fewer steps are proportionally
+    /// faster in the denoise stage and give a coarser chunk.
+    pub fn predict_steps(
+        &self,
+        images: &[Vec<f32>],
+        task: &str,
+        state: &[f32],
+        seed: u64,
+        steps: Option<usize>,
+    ) -> Result<ActionChunk> {
+        let mc = self.model.config();
+        let noise = gaussian_noise(mc.chunk * mc.max_action_dim, seed);
+        self.run(images, task, state, &noise, steps.unwrap_or(mc.num_steps))
+    }
+
     /// [`predict`](Self::predict) with explicit start noise
     /// `[chunk, max_action_dim]` (validation against a reference run).
     pub fn predict_with_noise(
@@ -246,6 +287,17 @@ impl VlaPipeline {
         task: &str,
         state: &[f32],
         noise: &[f32],
+    ) -> Result<ActionChunk> {
+        self.run(images, task, state, noise, self.model.config().num_steps)
+    }
+
+    fn run(
+        &self,
+        images: &[Vec<f32>],
+        task: &str,
+        state: &[f32],
+        noise: &[f32],
+        steps: usize,
     ) -> Result<ActionChunk> {
         if images.is_empty() {
             bail!("SmolVLA needs at least one camera image");
@@ -268,9 +320,9 @@ impl VlaPipeline {
         let t1 = Instant::now();
         let mut embs = image_embs;
         embs.extend(self.model.embed_language_and_state(&lang, &state)?);
-        let (cache, _) = self.model.prefix_pass(&embs)?;
+        let cache = self.model.prefix_cache(&embs)?;
         let t2 = Instant::now();
-        let x = self.model.sample_actions(&cache, noise)?;
+        let x = self.model.sample_actions_steps(&cache, noise, steps)?;
         let t3 = Instant::now();
 
         let dim = self.action_dim;

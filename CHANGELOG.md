@@ -26,8 +26,16 @@ section below as the GitHub release body.
 - Checked against LeRobot's PyTorch implementation at every stage (image embedding,
   prefix K/V, one flow-matching step, the final chunk): the actions match to 4e-6 on the
   same inputs and start noise. `scripts/gen_smolvla_fixture.py` regenerates the reference.
-- First cut: CPU, f32 weights, about 2.0 s per chunk on an Apple M4 with one camera
-  (vision 0.7 s, prefix 0.2 s, 10 denoising steps 1.0 s). Not yet quantized or tuned.
+- **8-bit weights by default**: about 0.9 s per chunk on an Apple M4 CPU with one camera
+  (vision 0.53 s, prefix 0.05 s, 10 denoising steps 0.33 s), against 1.8 s for f32
+  (`--f32`). The 8-bit path moves the actions by at most 0.035 (RMS 0.004) in
+  normalized units on the test observation; LeRobot's own default bf16 precision moves
+  them by 0.014 (RMS 0.002).
+- **`sapient serve` endpoint** `POST /v1/actions` (`task`, `images` as base64 data URIs,
+  optional `state`, `seed`, `steps`): the policy stays loaded, so a call costs inference
+  only. `sapient serve lerobot/smolvla_base` preloads it.
+- `--steps N` / `"steps": N` runs fewer flow-matching steps. It is faster and much
+  coarser: 5 steps halve the denoising time and move the actions by up to 0.24.
 - The base checkpoint is a pretraining model meant for fine-tuning and ships no plain
   state/action statistics, so its actions are in normalized space; checkpoints that carry
   `observation.state.*` / `action.*` statistics are normalized and un-normalized.

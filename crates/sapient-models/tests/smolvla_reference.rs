@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use sapient_core::Tensor;
-use sapient_models::forward::{SmolVla, SmolVlaConfig};
+use sapient_models::forward::{SmolVla, SmolVlaConfig, SmolVlaQuant};
 
 fn fixture() -> HashMap<String, Tensor> {
     let p =
@@ -194,4 +194,108 @@ fn smolvla_matches_lerobot_reference() {
          one denoise step {step_ms:.0} ms · {} steps {sample_ms:.0} ms",
         c.num_steps
     );
+}
+
+/// Action error and time of each Q8_0 choice, against the f32 LeRobot reference.
+///
+/// The yardstick is LeRobot's own default precision: it runs the VLM and the expert in bf16,
+/// which moves the action chunk by `BF16_MAX` (max abs, measured with the same
+/// inputs) from the f32 reference.
+#[test]
+#[ignore = "needs the lerobot/smolvla_base checkpoint: set SAPIENT_SMOLVLA_DIR"]
+fn smolvla_quantized_action_error() {
+    let dir = PathBuf::from(std::env::var("SAPIENT_SMOLVLA_DIR").expect("set SAPIENT_SMOLVLA_DIR"));
+    let f = fixture();
+    let lang_mask = fx(&f, "input.lang_mask");
+    let lang: Vec<u32> = fx(&f, "input.lang_tokens")
+        .iter()
+        .zip(&lang_mask)
+        .filter(|(_, m)| **m > 0.5)
+        .map(|(t, _)| *t as u32)
+        .collect();
+    let (state, noise) = (fx(&f, "input.state"), fx(&f, "input.noise"));
+    let want = fx(&f, "actions.normalized");
+
+    let q = |vision, vlm, expert| SmolVlaQuant {
+        vision,
+        vlm,
+        expert,
+    };
+    let configs = [
+        ("f32", SmolVlaQuant::NONE),
+        ("vision", q(true, false, false)),
+        ("vlm", q(false, true, false)),
+        ("expert", q(false, false, true)),
+        ("vision+vlm", q(true, true, false)),
+        ("all", SmolVlaQuant::ALL),
+    ];
+    for (name, quant) in configs {
+        let weights = sapient_io::load_safetensors(&dir.join("model.safetensors")).unwrap();
+        let model = SmolVla::from_weights_quant(SmolVlaConfig::default(), weights, quant).unwrap();
+        let pixels = test_image(model.image_size());
+        let mut best = [f64::MAX; 3];
+        let mut actions = Vec::new();
+        for _ in 0..3 {
+            let t0 = std::time::Instant::now();
+            let embs = model.embed_prefix(&[&pixels], &lang, &state).unwrap();
+            let t1 = std::time::Instant::now();
+            // embed_prefix includes the (tiny) language/state embedding.
+            let cache = model.prefix_cache(&embs).unwrap();
+            let t2 = std::time::Instant::now();
+            actions = model.sample_actions(&cache, &noise).unwrap();
+            let t3 = std::time::Instant::now();
+            for (b, d) in best.iter_mut().zip([t1 - t0, t2 - t1, t3 - t2]) {
+                *b = b.min(d.as_secs_f64() * 1e3);
+            }
+        }
+        let (max, _) = err(&actions, &want);
+        let rms = (actions
+            .iter()
+            .zip(&want)
+            .map(|(a, w)| ((a - w) as f64).powi(2))
+            .sum::<f64>()
+            / want.len() as f64)
+            .sqrt();
+        println!(
+            "{name:11} max_err {max:.3e}  rms {rms:.3e} | vision {:4.0} ms · prefix {:4.0} ms · \
+             denoise {:4.0} ms · total {:4.0} ms",
+            best[0],
+            best[1],
+            best[2],
+            best.iter().sum::<f64>()
+        );
+        // Regression guards at 2× the measured values (f32 must stay exact).
+        let (max_tol, rms_tol) = if quant == SmolVlaQuant::NONE {
+            (1e-4, 1e-5)
+        } else {
+            (7e-2, 8e-3)
+        };
+        assert!(
+            max <= max_tol && rms <= rms_tol,
+            "{name}: action error max {max} rms {rms}"
+        );
+
+        // What fewer Euler steps cost (information only — a coarser integral
+        // of the same flow, compared with the 10-step f32 reference).
+        if quant == SmolVlaQuant::ALL {
+            let embs = model.embed_prefix(&[&pixels], &lang, &state).unwrap();
+            let cache = model.prefix_cache(&embs).unwrap();
+            for steps in [5usize, 3] {
+                let t = std::time::Instant::now();
+                let a = model.sample_actions_steps(&cache, &noise, steps).unwrap();
+                let ms = t.elapsed().as_secs_f64() * 1e3;
+                let (max, _) = err(&a, &want);
+                let rms = (a
+                    .iter()
+                    .zip(&want)
+                    .map(|(a, w)| ((a - w) as f64).powi(2))
+                    .sum::<f64>()
+                    / want.len() as f64)
+                    .sqrt();
+                println!(
+                    "all, {steps} steps  max_err {max:.3e}  rms {rms:.3e} | denoise {ms:4.0} ms"
+                );
+            }
+        }
+    }
 }

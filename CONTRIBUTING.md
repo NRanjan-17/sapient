@@ -384,7 +384,10 @@ checks every stage, and `cargo test -p sapient-generate --release --test vla_e2e
 --ignored` checks the full pipeline. Regenerate the fixture with
 `scripts/gen_smolvla_fixture.py` (needs `pip install "lerobot[smolvla]"` in a throwaway
 virtual environment — LeRobot is not a dependency of this repository). A change to the
-engine that moves the action chunk must report the new error against the fixture.
+engine that moves the action chunk must report the new error against the fixture: the
+`smolvla_quantized_action_error` test in `smolvla_reference` prints max and RMS action
+error plus timings for each quantization choice, and guards them at twice the measured
+values. The f32 path must stay within 1e-4.
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
