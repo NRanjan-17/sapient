@@ -494,6 +494,23 @@ fn gemv_chunk(n: usize) -> usize {
     }
 }
 
+/// Whether the quantized matmuls take the int8-activation SDOT/SMMLA paths:
+/// requires the `dotprod` CPU feature, and can be switched off with
+/// `SAPIENT_F32_ACT=1` to force the f32-activation reference kernels. That knob
+/// is a diagnostic — it isolates what int8 activation quantization costs in
+/// quality (`sapient eval-ppl`) — not a tuning option: the f32 path is slower.
+#[cfg(target_arch = "aarch64")]
+fn int8_activations() -> bool {
+    use std::sync::OnceLock;
+    static F32_ONLY: OnceLock<bool> = OnceLock::new();
+    std::arch::is_aarch64_feature_detected!("dotprod")
+        && !*F32_ONLY.get_or_init(|| {
+            std::env::var("SAPIENT_F32_ACT")
+                .map(|v| v == "1")
+                .unwrap_or(false)
+        })
+}
+
 /// Q8_K-format activations for the Q4_K_R4 matmuls (ONE f32 scale per
 /// 256-element super-block + per-32 sums; integer-domain sub-scale combine —
 /// the pp512 activation-format rung, BENCHMARKS.md). **Default ON — measured
@@ -664,7 +681,7 @@ fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
     // SDOT dispatch: ARMv8.4-A `sdot` via inline asm, stable Rust.
     // All Apple M-series and DGX Spark (Grace ARM64) support dotprod.
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("dotprod") {
+    if int8_activations() {
         // ── Blocked W8A8 GEMM (m ≥ 8: prefill / vision towers) ───────────────
         // The per-row loop below runs one rayon fork-join and one activation
         // quantization PER ROW — 4096 barriers for a SigLIP-896 tower. Here:
@@ -838,7 +855,7 @@ fn matmul_nt_q4_k_r4(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Re
     // PAIR of prompt tokens instead of once per token. Output is built
     // group-major (transposed) so rayon tasks own contiguous chunks.
     #[cfg(target_arch = "aarch64")]
-    if m >= 2 && std::arch::is_aarch64_feature_detected!("i8mm") {
+    if m >= 2 && int8_activations() && std::arch::is_aarch64_feature_detected!("i8mm") {
         let q8k = q8k_activations();
         let quantized: Vec<(Vec<i8>, Vec<f32>, Vec<i32>)> = (0..m)
             .map(|i| {
@@ -911,7 +928,7 @@ fn matmul_nt_q4_k_r4(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Re
     }
 
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("dotprod") {
+    if int8_activations() {
         let q8k = q8k_activations();
         for i in 0..m {
             let x_row = &x_data[i * k..(i + 1) * k];
@@ -986,7 +1003,7 @@ fn matmul_nt_q4_k(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
     // cost on a Raspberry Pi 5 / Cortex-A76. Per-block scales (not one per row)
     // keep activation outliers from collapsing the signal (cf. Q8_0 SDOT).
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("dotprod") {
+    if int8_activations() {
         let q8k = q8k_activations();
         for i in 0..m {
             let x_row = &x_data[i * k..(i + 1) * k];
@@ -1094,7 +1111,7 @@ fn matmul_nt_q6_k_r4(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Re
 
     // ── i8mm SMMLA prefill path (m ≥ 2, ARMv8.6) — see matmul_nt_q4_k_r4 ────
     #[cfg(target_arch = "aarch64")]
-    if m >= 2 && std::arch::is_aarch64_feature_detected!("i8mm") {
+    if m >= 2 && int8_activations() && std::arch::is_aarch64_feature_detected!("i8mm") {
         let q8k = q8k_activations();
         let quantized: Vec<(Vec<i8>, Vec<f32>)> = (0..m)
             .map(|i| {
@@ -1160,7 +1177,7 @@ fn matmul_nt_q6_k_r4(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Re
 
     #[cfg(target_arch = "aarch64")]
     {
-        let dotprod = std::arch::is_aarch64_feature_detected!("dotprod");
+        let dotprod = int8_activations();
         for i in 0..m {
             let x_row = &x_data[i * k..(i + 1) * k];
             let q8k = q8k_activations();
@@ -1233,7 +1250,7 @@ fn matmul_nt_q6_k(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
     // quants) instead of the f32 path's widen/convert/FMA chains — the same
     // W·A8 treatment that made Q4_K fast, applied to Q6_K.
     #[cfg(target_arch = "aarch64")]
-    if std::arch::is_aarch64_feature_detected!("dotprod") {
+    if int8_activations() {
         let q8k = q8k_activations();
         for i in 0..m {
             let x_row = &x_data[i * k..(i + 1) * k];

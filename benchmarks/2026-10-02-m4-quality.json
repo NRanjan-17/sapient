@@ -44,5 +44,6 @@
   "notes": [
     "The stderr values are for the absolute estimate. The three runs score identical tokens, so differences between them are paired and much tighter than the stderr suggests; a per-token paired interval is not computed yet.",
     "Metal (MLX 4-bit re-quantization) is not measured: building --features mlx needs Xcode's Metal Toolchain component, which is not installed on this machine."
-  ]
+  ],
+  "superseded_by": "2026-10-02-m4-quality-ablation.json \u2014 these numbers were taken with two protocol bugs: a stray '<s>' token treated as BOS for Qwen, and chunks one token later than llama.cpp's for models with a BOS. Numbers left as measured."
 }

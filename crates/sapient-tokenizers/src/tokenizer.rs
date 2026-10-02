@@ -83,7 +83,7 @@ impl SapientTokenizer {
         let inner = Tokenizer::from_pretrained(model_id, None)
             .map_err(|e| anyhow::anyhow!("Failed to load tokenizer for '{model_id}': {e}"))?;
 
-        let bos_id = Self::special_token_id(&inner, &["<s>", "<bos>", "<|begin_of_text|>"]);
+        let bos_id = Self::bos_token_id(&inner, &["<s>", "<bos>", "<|begin_of_text|>"]);
         let eos_ids = Self::all_special_token_ids(&inner, EOS_CANDIDATES);
         let eos_id = eos_ids.first().copied();
         let pad_id = Self::special_token_id(&inner, &["<pad>"]);
@@ -174,6 +174,21 @@ impl SapientTokenizer {
         self.eos_ids.contains(&id)
     }
 
+    /// The model's BOS id: the first candidate that is a **special added token**.
+    ///
+    /// A name match alone is not enough. Qwen2.5's vocabulary contains `<s>` as
+    /// an ordinary BPE token (id 128245) and the model has no BOS at all —
+    /// treating that as BOS prepended a stray token to every Qwen prompt.
+    /// Real BOS tokens (Llama's `<|begin_of_text|>`, Mistral's `<s>`, Gemma's
+    /// `<bos>`) are registered as special added tokens in `tokenizer.json`.
+    fn bos_token_id(tok: &Tokenizer, candidates: &[&str]) -> Option<u32> {
+        let added = tok.get_added_tokens_decoder();
+        candidates.iter().find_map(|c| {
+            let id = tok.token_to_id(c)?;
+            added.get(&id).filter(|t| t.special).map(|_| id)
+        })
+    }
+
     fn special_token_id(tok: &Tokenizer, candidates: &[&str]) -> Option<u32> {
         for c in candidates {
             if let Some(id) = tok.token_to_id(c) {
@@ -197,8 +212,7 @@ impl SapientTokenizer {
     }
 
     fn from_inner(inner: Tokenizer, opts: TokenizerOptions) -> Result<Self> {
-        let bos_id =
-            Self::special_token_id(&inner, &["<s>", "<bos>", "<|begin_of_text|>", "[BOS]"]);
+        let bos_id = Self::bos_token_id(&inner, &["<s>", "<bos>", "<|begin_of_text|>", "[BOS]"]);
         let eos_ids = Self::all_special_token_ids(&inner, EOS_CANDIDATES);
         let eos_id = eos_ids.first().copied();
         let pad_id =
@@ -267,4 +281,45 @@ mod tests {
     // Integration tests require network access to download tokenizer.json.
     // Run with: cargo test -p sapient-tokenizers -- --ignored
     // (or point at a local tokenizer.json)
+
+    use super::*;
+    use tokenizers::models::wordlevel::WordLevel;
+    use tokenizers::AddedToken;
+
+    fn word_level(vocab: &[&str]) -> Tokenizer {
+        let map = vocab
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.to_string(), i as u32))
+            .collect();
+        let model = WordLevel::builder()
+            .vocab(map)
+            .unk_token("<unk>".into())
+            .build()
+            .unwrap();
+        Tokenizer::new(model)
+    }
+
+    /// Qwen-shaped: `<s>` exists in the vocabulary as a plain token, the model
+    /// has no BOS → no BOS id, and `encode` must not prepend anything.
+    #[test]
+    fn plain_vocab_token_named_like_bos_is_not_bos() {
+        let tok = word_level(&["<unk>", "<s>", "a"]);
+        let st = SapientTokenizer::from_inner(tok, TokenizerOptions::default()).unwrap();
+        assert_eq!(st.bos_id, None);
+        assert_eq!(st.encode("a").unwrap(), vec![2]);
+    }
+
+    /// Llama/Mistral-shaped: the BOS is a special added token → detected and
+    /// prepended once.
+    #[test]
+    fn special_added_bos_is_detected_and_prepended() {
+        let mut tok = word_level(&["<unk>", "a"]);
+        tok.add_special_tokens([AddedToken::from("<s>", true)])
+            .unwrap();
+        let bos = tok.token_to_id("<s>").unwrap();
+        let st = SapientTokenizer::from_inner(tok, TokenizerOptions::default()).unwrap();
+        assert_eq!(st.bos_id, Some(bos));
+        assert_eq!(st.encode("a").unwrap(), vec![bos, 1]);
+    }
 }
