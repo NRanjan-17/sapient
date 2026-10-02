@@ -5,11 +5,13 @@ inference through [`sapient-ffi`](../../crates/sapient-ffi).
 
 ```bash
 # 0. Package the engine module (repo root, once — and after any FFI API change)
-./scripts/package-android.sh            # add --emulator for x86_64 emulators
+# add --emulator for x86_64 emulators
+./scripts/package-android.sh
 
 # Build the APK (JDK 17; ANDROID_HOME or local.properties pointing at the SDK)
 cd examples/android-chat
-./gradlew :app:assembleDebug            # → app/build/outputs/apk/debug/app-debug.apk
+# → app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:assembleDebug
 ```
 
 The engine comes in as a plain Gradle module — `settings.gradle.kts` includes

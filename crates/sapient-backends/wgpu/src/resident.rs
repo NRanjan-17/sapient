@@ -42,6 +42,9 @@ fn f16_kv_variant(src: &str) -> String {
 /// kernels that dequantize/read each weight once and reuse it across MT rows.
 /// Must match `const MT` in the `matmul_nt*_mt.wgsl` shaders.
 pub(crate) const MT_ROWS: usize = 8;
+/// Output elements per workgroup in the single-row GEMV shaders
+/// (`matmul_nt*.wgsl`). Must match `const ROWS` there.
+pub(crate) const GEMV_ROWS: usize = 16;
 
 /// An f32 tensor resident in a GPU storage buffer. `len` is the element count;
 /// callers track logical shape separately (kernels take explicit dims).
@@ -219,15 +222,7 @@ impl WgpuContext {
             layout: &layout,
             entries: &entries,
         });
-        self.with_encoder(|enc| {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some(label),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(gx, gy, 1);
-        });
+        self.record_dispatch(label, &pipeline, &bind_group, (gx, gy));
     }
 
     // ── Kernels ────────────────────────────────────────────────────────────────
@@ -362,7 +357,7 @@ impl WgpuContext {
                 include_str!("shaders/matmul_nt.wgsl"),
                 &[&x.buf, &w.buf, &out.buf],
                 &params,
-                (m * n) as u32,
+                (m * n).div_ceil(GEMV_ROWS) as u32,
             );
         }
         out

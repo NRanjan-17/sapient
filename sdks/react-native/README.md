@@ -33,8 +33,10 @@ The raw generated bindings are also exported (`loadSession`, `LlmSession`,
 
 ```bash
 npm install
-IPHONEOS_DEPLOYMENT_TARGET=14.0 npm run ubrn:ios   # cargo + xcframework + codegen
-npm run ubrn:android                                # NDK .so + codegen
+# cargo + xcframework + codegen
+IPHONEOS_DEPLOYMENT_TARGET=14.0 npm run ubrn:ios
+# NDK .so + codegen
+npm run ubrn:android
 ```
 
 `ubrn:*` regenerates `src/generated`, `cpp/generated`, the podspec, and the

@@ -42,6 +42,29 @@ section below as the GitHub release body.
   state/action statistics, so its actions are in normalized space; checkpoints that carry
   `observation.state.*` / `action.*` statistics are normalized and un-normalized.
 
+### 🔧 Fixes from a teammate's GPU benchmark report
+
+- **wgpu decode up to 2.5× faster** (Apple M4): one compute pass per token instead of one
+  per kernel, and the decode matrix-vector kernels use their threads instead of idling
+  ~80% of them. qwen2.5-0.5b 23 → 43 tok/s (on par with CPU), qwen2.5-1.5b-q4 13.5 → 34.
+  Output is unchanged. wgpu is still slower than the CPU for 4-bit models on Apple
+  Silicon.
+- **`sapient serve --backend metal` on a build without Metal** (or `--backend wgpu`
+  without GPU support) now refuses to start and says why and what to install, instead
+  of answering every request with a bare HTTP 500. Load failures in other routes now
+  include the underlying cause.
+- `scripts/bench_wgpu.py` prints why a backend was skipped and carries on, instead of
+  crashing; the first-request timeout allows for a model download.
+- The chat hint for full-precision models said "4-8× faster"; measured it is about
+  2–3× on CPU (qwen2.5-0.5b: 44 → 113 tok/s on an M4), and it is no longer shown when
+  running on a GPU backend, where it isn't reliably true.
+- Docs: shell examples no longer put `# comments` at the end of commands. In zsh, the
+  macOS default, those became arguments (`zsh: unknown file attribute`). 63 commands
+  fixed across the README, CONTRIBUTING and docs.
+- The microphone-permission code uses `objc2`/`block2`; default builds no longer show
+  the `block v0.1.6` future-incompatibility warning. Builds with `--features wgpu`
+  still do, through wgpu 22 itself (fixed upstream in wgpu 30).
+
 ### 🤖 SmolVLA: real-data check and asynchronous chunking
 
 - Checked on 24 real frames from an SO-100 dataset (two cameras): `exact` matches

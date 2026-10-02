@@ -73,7 +73,9 @@ pub use sapient_audio::{
 };
 pub use sapient_backends_cpu::thermal::{external_thermal_level, set_external_thermal_level};
 pub use sapient_models::DecoderStreamInputs;
-pub use sapient_models::{mac_gpu_support, LlmBackendKind as GenerationBackend, MacGpuSupport};
+pub use sapient_models::{
+    backend_unavailable_reason, mac_gpu_support, LlmBackendKind as GenerationBackend, MacGpuSupport,
+};
 pub use sentence::SentenceChunker;
 pub use speak::{SpeakPipeline, DEFAULT_ORPHEUS_VOICE, ORPHEUS_VOICES};
 pub use speculative::SpeculativePipeline;

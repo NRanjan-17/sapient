@@ -13,8 +13,10 @@ cd examples/swift-chat
 swift run SapientChatMac
 
 # iOS app (project is generated, not committed)
-xcodegen                        # brew install xcodegen
-open SapientChat.xcodeproj      # scheme: SapientChatApp
+# brew install xcodegen
+xcodegen
+# scheme: SapientChatApp
+open SapientChat.xcodeproj
 ```
 
 Headless iOS build (what CI runs — no signing needed for the simulator):

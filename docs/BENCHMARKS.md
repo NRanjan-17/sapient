@@ -825,8 +825,10 @@ Still wanted — **Intel Arc / AMD Radeon**:
 
 ```bash
 # Linux (needs Rust, python3, libvulkan1 + your GPU driver):
-git clone https://github.com/SkidGod4444/sapient && cd sapient   # Phase 7 is merged — use main
-scripts/bench_gpu_7_6.sh             # writes bench-7_6-<gpu>.txt — attach it to a new issue
+# Phase 7 is merged — use main
+git clone https://github.com/SkidGod4444/sapient && cd sapient
+# writes bench-7_6-<gpu>.txt — attach it to a new issue
+scripts/bench_gpu_7_6.sh
 ```
 
 Windows (DX12): build with `cargo build --release -p sapient-cli --features wgpu`,
@@ -1146,6 +1148,32 @@ predicted, 22.7% measured; 15 Hz: equal for both, 45.6% both).
 
 `auto` matches the best fixed threshold at every rate measured (10 Hz: 1 point, within
 run-to-run spread) without knowing the machine or the rate in advance.
+
+---
+
+## wgpu on Apple Silicon: teammate report and fixes (2026-10-02)
+
+A teammate's run of `scripts/bench_wgpu.py` on an Apple M5 showed wgpu at 0.69× the CPU
+(Qwen2.5-1.5B, 17.0 vs 24.8 tok/s) and the `metal` row crashing with HTTP 500 on a
+`--features wgpu` build. Reproduced on an Apple M4 (`--features wgpu`, 128 tokens):
+
+| Model | CPU | wgpu before | wgpu after |
+|---|---|---|---|
+| qwen2.5-0.5b (safetensors → Q8_0) | 43.6–44.2 tok/s | 22.9 | **42.6** |
+| qwen2.5-1.5b-q4 (Q4_K_M) | 48.0–58.4 | 13.5 | **33.9** |
+| llama-3.2-1b-q4 (Q4_K_M) | 73.7 | — | 48.7 |
+
+Two changes, both output-identical (same reply text; GPU coherence gates pass):
+
+1. One compute pass per token instead of one per kernel (~450): CPU recording
+   10.3 → 4.1 ms/token.
+2. Decode matrix-vector kernels re-laid out from one 256-thread workgroup per output
+   element to 16 elements × 16 threads per workgroup. Per-token time on 1.5B-Q4 by
+   threads per element: 256 → 57.6 ms, 64 → 36.5, 32 → 34.8, 16 → 27.4, 8 → 27.2.
+
+wgpu remains slower than the CPU for Q4_K_M models on Apple Silicon; on non-Apple GPUs
+(its purpose) these kernels are untuned and unmeasured here. The `metal` 500 is now a
+startup error naming the reason (see CHANGELOG).
 
 ---
 

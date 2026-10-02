@@ -235,6 +235,13 @@ Radeon, Nvidia, and Apple — and are dev-tested on Apple Silicon (Metal under w
   file size; 6.4× vs f32), peak footprint 5.4→**3.6 GB**, decode 11.3→**13.2 tok/s —
   the wgpu path beat the NEON M4 CPU as it stood then (11.7) at 1.13×** — since
   overtaken: the M4 CPU path now decodes this model at 40–50 tok/s. TTFT 77 ms.
+- ✅ **Decode GEMV re-layout + shared compute pass** (2026-10-02, from a teammate's M5
+  report): 16 output elements × 16 threads per workgroup instead of one 256-thread
+  workgroup per element, and one compute pass per token. M4: qwen2.5-0.5b 23 → 43 tok/s
+  (≈ CPU), 1.5B-Q4 13.5 → 34 (CPU 58). Output unchanged. Open: wgpu still trails the CPU
+  for Q4 models on Apple Silicon (kernel fusion, x in workgroup memory, Q6_K lm_head);
+  tune `LANES`/`ROWS` on Vulkan/DX12 GPUs; upgrade wgpu 22 → 30 (drops the `block`
+  future-incompatibility warning).
 - ✅ **f16 KV cache** (Phase 7.3, `kv_append{,_f16}.wgsl` + templated attention):
   K/V stored as f16 halves packed two-per-`u32` word, written by a `kv_append`
   conversion kernel and read via core-WGSL `unpack2x16float` — **no `SHADER_F16`

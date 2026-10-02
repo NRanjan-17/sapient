@@ -95,6 +95,61 @@ fn use_mlx_engine(backend: LlmBackendKind) -> bool {
     }
 }
 
+/// Why an explicitly requested backend cannot run in this binary on this
+/// machine (`None` when it can; `Cpu` and `Auto` always can — `Auto` falls back
+/// to the CPU). Lets callers such as `sapient serve` refuse a backend up front
+/// with a clear message instead of failing on the first request.
+pub fn backend_unavailable_reason(kind: LlmBackendKind) -> Option<String> {
+    match kind {
+        LlmBackendKind::Metal => {
+            let support = backend::mac_gpu_support();
+            if support.available {
+                None
+            } else {
+                Some(format!(
+                    "the Metal (MLX) backend is not available: {}. Use `--backend cpu`{}, \
+                     or on Apple Silicon install the Metal build (`sapient update --metal`) \
+                     or build with `--features mlx`",
+                    support.reason,
+                    if cfg!(feature = "wgpu") {
+                        " or `--backend wgpu`"
+                    } else {
+                        ""
+                    }
+                ))
+            }
+        }
+        LlmBackendKind::Wgpu => {
+            #[cfg(feature = "wgpu")]
+            {
+                if sapient_backends_wgpu::WgpuContext::adapter_available() {
+                    None
+                } else {
+                    Some(
+                        "the wgpu backend found no usable GPU adapter (missing or broken \
+                         Vulkan/DX12/Metal driver). Use `--backend cpu`"
+                            .to_string(),
+                    )
+                }
+            }
+            #[cfg(not(feature = "wgpu"))]
+            {
+                let install = if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+                    "on Apple Silicon use `--backend metal` with the Metal build \
+                     (`sapient update --metal`)"
+                } else {
+                    "install the GPU build (`sapient update --gpu`)"
+                };
+                Some(format!(
+                    "this binary was built without GPU (wgpu) support. Use `--backend cpu`, \
+                     {install}, or build with `--features wgpu`"
+                ))
+            }
+        }
+        LlmBackendKind::Cpu | LlmBackendKind::Auto => None,
+    }
+}
+
 /// Returns true when the cross-platform wgpu GPU backend should be used:
 /// explicit `--backend wgpu`, **or** `Auto` on a binary compiled with the `wgpu`
 /// feature (the `-gpu` release variant) — so a GPU binary runs on the GPU by

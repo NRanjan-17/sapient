@@ -24,8 +24,8 @@ flume = { workspace = true, optional = true }
 # `cfg(target_os = "macos")`; declaring them here avoids the per-target `dep:`
 # feature pitfall. No effect on Linux/Windows builds.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc  = { workspace = true }
-block = { workspace = true }
+objc2  = { workspace = true }
+block2 = { workspace = true }
 
 [features]
 # Live microphone capture + speaker playback (cpal). Off by default in this crate
@@ -36,8 +36,3 @@ audio-io = ["dep:cpal", "dep:flume"]
 [dev-dependencies]
 approx = { workspace = true }
 
-[lints.rust]
-# objc 0.2.7's `class!`/`msg_send!` macros (used in the macOS mic-permission
-# request) expand to a legacy `cfg(feature = "cargo-clippy")`, which newer rustc
-# flags via unexpected_cfgs. Declare it as a known cfg so `-D warnings` is happy.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }

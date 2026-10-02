@@ -137,11 +137,13 @@ GitHub release.
 ```bash
 # Apple: SapientFFI.xcframework (iOS device + simulator + macOS) + Swift Package
 #        --smoke also compiles & RUNS a macOS binary against the packaged lib
-./scripts/package-swift.sh --smoke     # → dist/mobile/sapient-swift{,.zip}
+# → dist/mobile/sapient-swift{,.zip}
+./scripts/package-swift.sh --smoke
 
 # Android: drop-in Gradle library module (arm64 .so + Kotlin + JNA dep wired)
 #          --emulator adds the x86_64 ABI for x86-host emulators
-./scripts/package-android.sh           # → dist/mobile/sapient-android{,.zip}
+# → dist/mobile/sapient-android{,.zip}
+./scripts/package-android.sh
 ```
 
 Under the hood (for debugging, or building by hand): the bindings generator
@@ -245,8 +247,10 @@ first `load()` call.
 See [`sdks/typescript/README.md`](../sdks/typescript/README.md). Short version:
 
 ```bash
-sapient serve                       # on your Mac / server / Pi
-npm install @openhorizon-labs/sapient    # in your app
+# on your Mac / server / Pi
+sapient serve
+# in your app
+npm install @openhorizon-labs/sapient
 ```
 
 ```ts

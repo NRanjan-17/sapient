@@ -74,7 +74,12 @@ fn matmul_nt_matches_cpu() {
         return;
     };
     // Decode-shaped (m=1) and a small batch (m=3) to cover both.
-    for (m, k, n) in [(1usize, 896usize, 1536usize), (3, 256, 64), (17, 256, 64)] {
+    for (m, k, n) in [
+        (1usize, 896usize, 1536usize),
+        (1, 96, 13), /* n % 8 != 0: partial last GEMV workgroup */
+        (3, 256, 64),
+        (17, 256, 64),
+    ] {
         let mut next = lcg();
         let x: Vec<f32> = (0..m * k).map(|_| next()).collect();
         let w: Vec<f32> = (0..n * k).map(|_| next()).collect();
@@ -529,7 +534,12 @@ fn matmul_nt_q8_0_resident_matches_dequant_reference() {
         return;
     };
     // Decode-shaped (m=1, lm_head-ish k) and a small batch; k must be %32.
-    for (m, k, n) in [(1usize, 896usize, 1536usize), (3, 64, 48), (17, 64, 48)] {
+    for (m, k, n) in [
+        (1usize, 896usize, 1536usize),
+        (1, 64, 13),
+        (3, 64, 48),
+        (17, 64, 48),
+    ] {
         let mut next = lcg();
         let x: Vec<f32> = (0..m * k).map(|_| next()).collect();
         let w: Vec<f32> = (0..n * k).map(|_| next()).collect();
@@ -645,7 +655,12 @@ fn matmul_nt_q4_k_resident_matches_dequant_reference() {
         return;
     };
     // Decode-shaped (m=1) and a small batch; k must be a multiple of 256.
-    for (m, k, n) in [(1usize, 1536usize, 512usize), (3, 256, 48), (17, 256, 48)] {
+    for (m, k, n) in [
+        (1usize, 1536usize, 512usize),
+        (1, 256, 13),
+        (3, 256, 48),
+        (17, 256, 48),
+    ] {
         let mut next = lcg();
         let x: Vec<f32> = (0..m * k).map(|_| next()).collect();
         let (blocks, wd) = random_q4_k_blocks(n * k / 256, &mut next);
@@ -744,7 +759,12 @@ fn matmul_nt_q6_k_resident_matches_dequant_reference() {
     let Some(ctx) = ctx() else {
         return;
     };
-    for (m, k, n) in [(1usize, 1536usize, 512usize), (3, 256, 48), (17, 256, 48)] {
+    for (m, k, n) in [
+        (1usize, 1536usize, 512usize),
+        (1, 256, 13),
+        (3, 256, 48),
+        (17, 256, 48),
+    ] {
         let mut next = lcg();
         let x: Vec<f32> = (0..m * k).map(|_| next()).collect();
         let (blocks, wd) = random_q6_k_blocks(n * k / 256, &mut next);

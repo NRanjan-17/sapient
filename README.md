@@ -39,11 +39,16 @@ vision in one self-contained binary.
 ```bash
 curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 
-sapient chat qwen2.5-0.5b-q4                        # chat (downloads the model on first run)
-sapient transcribe whisper-base recording.wav       # speech → text
-sapient speak kokoro-82m "Hello from my own CPU."   # text → speech
-sapient see photo.jpg -p "What's in this picture?"  # vision
-sapient serve                                       # OpenAI-compatible API on :11435
+# chat (downloads the model on first run)
+sapient chat qwen2.5-0.5b-q4
+# speech → text
+sapient transcribe whisper-base recording.wav
+# text → speech
+sapient speak kokoro-82m "Hello from my own CPU."
+# vision
+sapient see photo.jpg -p "What's in this picture?"
+# OpenAI-compatible API on :11435
+sapient serve
 ```
 
 **Contents:** [Install](#install) · [CLI](#cli) · [HTTP server](#http-server--openai-compatible) ·
@@ -107,16 +112,28 @@ Grab a pre-built binary for your platform from the [**latest release**](https://
 Run `sapient models` to see every supported model, and `sapient <command> --help` for
 all flags.
 
+Pasting these blocks into zsh (the macOS default shell): zsh does not treat `#` as a
+comment unless `setopt interactivecomments` is set, so the `# …` lines print
+"command not found: #". The commands themselves still run; skip the comment lines or
+set the option once.
+
 **Chat**
 
 ```bash
-sapient chat openhorizon/phi-2                               # interactive; replies render as live Markdown
-sapient chat openhorizon/phi-2 --raw                         # plain text (automatic when piped)
-sapient chat openhorizon/qwen2.5-0.5b --backend auto         # auto | cpu | metal | wgpu
-sapient chat openhorizon/qwen2.5-0.5b -p "Tell me a joke"    # one-shot: reply on stdout, scriptable
-sapient chat openhorizon/phi-4-mini -n 4096 -p "…"           # --max-tokens (default 2048; capped replies print a notice)
-sapient chat openhorizon/qwen2.5-1.5b --speculative          # speculative decoding with a draft model
-sapient run openhorizon/phi-2 --prompt "Explain transformers" # raw completion (no chat template)
+# interactive; replies render as live Markdown
+sapient chat openhorizon/phi-2
+# plain text (automatic when piped)
+sapient chat openhorizon/phi-2 --raw
+# auto | cpu | metal | wgpu
+sapient chat openhorizon/qwen2.5-0.5b --backend auto
+# one-shot: reply on stdout, scriptable
+sapient chat openhorizon/qwen2.5-0.5b -p "Tell me a joke"
+# --max-tokens (default 2048; capped replies print a notice)
+sapient chat openhorizon/phi-4-mini -n 4096 -p "…"
+# speculative decoding with a draft model
+sapient chat openhorizon/qwen2.5-1.5b --speculative
+# raw completion (no chat template)
+sapient run openhorizon/phi-2 --prompt "Explain transformers"
 ```
 
 Inside chat: `/help` for commands, `/clear` to reset the conversation, `/exit` to quit.
@@ -125,15 +142,21 @@ Inside chat: `/help` for commands, `/clear` to reset the conversation, `/exit` t
 
 ```bash
 # Speech-to-text — Whisper (WAV/FLAC/MP3/OGG/M4A)
-sapient transcribe whisper-base recording.wav             # streams text as it decodes
-sapient transcribe whisper-small talk.mp3 --language en   # skip language auto-detect
-sapient transcribe whisper-tiny clip.flac --translate     # → English
-sapient transcribe whisper-base long.wav --timestamps     # long audio, with timestamps
-sapient transcribe whisper-base clip.wav --beam-size 5    # beam search
+# streams text as it decodes
+sapient transcribe whisper-base recording.wav
+# skip language auto-detect
+sapient transcribe whisper-small talk.mp3 --language en
+# → English
+sapient transcribe whisper-tiny clip.flac --translate
+# long audio, with timestamps
+sapient transcribe whisper-base long.wav --timestamps
+# beam search
+sapient transcribe whisper-base clip.wav --beam-size 5
 
 # Text-to-speech — Kokoro-82M (about 2× real-time on an M4 CPU; 54 voices)
 # The first use downloads the model and its 7.6 MB pronunciation data.
-sapient speak kokoro-82m "Hello, this is sapient speaking."              # plays + writes speech.wav
+# plays + writes speech.wav
+sapient speak kokoro-82m "Hello, this is sapient speaking."
 sapient speak kokoro-82m "The quick brown fox." --voice af_bella -o fox.wav
 sapient speak kokoro-82m "Save it, don't play it." --no-play -o out.wav
 
@@ -144,10 +167,12 @@ sapient speak orpheus-3b "The quick brown fox." --voice leo -o fox.wav
 **Vision**
 
 ```bash
-sapient see photo.jpg -p "What's in this picture?"                   # SmolVLM-256M (default)
+# SmolVLM-256M (default)
+sapient see photo.jpg -p "What's in this picture?"
 sapient see photo.jpg -p "What's in this picture?" --model smolvlm2-500m
 sapient see chart.png -p "Summarize this chart." --model gemma-3-4b
-sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (gated: sapient login)
+# medical (gated: sapient login)
+sapient see xray.png -p "Describe findings." --model medgemma-4b
 ```
 
 **Robot actions (experimental, after v0.6.1)**
@@ -155,8 +180,10 @@ sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (
 ```bash
 # SmolVLA: camera image(s) + instruction + robot state -> the next 50 actions
 sapient act camera.jpg --task "pick up the red cube" --state "0.1,0.2,-0.3,0.4,0,0.5"
-sapient act top.jpg wrist.jpg --task "pick up the red cube" --json   # two cameras, JSON output
-sapient act camera.jpg --task "pick up the red cube" --precision balanced   # or: exact
+# two cameras, JSON output
+sapient act top.jpg wrist.jpg --task "pick up the red cube" --json
+# or: exact
+sapient act camera.jpg --task "pick up the red cube" --precision balanced
 
 # Keep the policy loaded and call it over HTTP
 sapient serve lerobot/smolvla_base
@@ -198,30 +225,43 @@ macOS prompts for permission, Linux builds need `libasound2-dev`.
 
 ```bash
 sapient converse qwen2.5-1.5b --stt whisper-base
-sapient converse qwen2.5-1.5b --speak        # speak replies aloud (Kokoro-82M)
+# speak replies aloud (Kokoro-82M)
+sapient converse qwen2.5-1.5b --speak
 ```
 
 **Server**
 
 ```bash
-sapient serve                    # OpenAI-compatible API on 127.0.0.1:11435 (--port to change)
+# OpenAI-compatible API on 127.0.0.1:11435 (--port to change)
+sapient serve
 sapient serve --speculative
 ```
 
 **Models and maintenance**
 
 ```bash
-sapient models                   # everything SAPIENT supports
-sapient pull openhorizon/phi-2   # download to the local cache
-sapient list                     # what is downloaded
-sapient rm openhorizon/phi-2     # remove one model
-sapient reset                    # clear the whole cache
-sapient info openhorizon/phi-2   # architecture and config
-sapient login                    # Hugging Face token for gated models
-sapient update                   # latest release (v0.5.x and older: re-run the install script once)
-sapient devices                  # detect CPU/GPU, recommend a backend (tok/s shown is a rough estimate)
-sapient stats                    # live CPU / RAM / disk monitor (aliases: top, monitor)
-sapient -v chat openhorizon/phi-2   # verbose: internal logs, file paths, generation stats
+# everything SAPIENT supports
+sapient models
+# download to the local cache
+sapient pull openhorizon/phi-2
+# what is downloaded
+sapient list
+# remove one model
+sapient rm openhorizon/phi-2
+# clear the whole cache
+sapient reset
+# architecture and config
+sapient info openhorizon/phi-2
+# Hugging Face token for gated models
+sapient login
+# latest release (v0.5.x and older: re-run the install script once)
+sapient update
+# detect CPU/GPU, recommend a backend (tok/s shown is a rough estimate)
+sapient devices
+# live CPU / RAM / disk monitor (aliases: top, monitor)
+sapient stats
+# verbose: internal logs, file paths, generation stats
+sapient -v chat openhorizon/phi-2
 ```
 
 ---
@@ -621,7 +661,8 @@ Whisper.
 cargo build --release -p sapient-cli --features wgpu
 ./target/release/sapient chat openhorizon/qwen2.5-0.5b --backend wgpu
 
-python3 scripts/bench_wgpu.py                       # time cpu vs wgpu (vs metal on a Mac) on your machine
+# time cpu vs wgpu (vs metal on a Mac) on your machine
+python3 scripts/bench_wgpu.py
 python3 scripts/bench_wgpu.py --model openhorizon/qwen2.5-1.5b --tokens 128
 ```
 

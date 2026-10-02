@@ -46,7 +46,19 @@ pub struct WgpuContext {
     /// (called automatically by `download_f32`) submits the whole batch at once.
     /// A decode step is ~450 kernels — batching them cuts ~450 submissions per
     /// token to 1, removing the fixed per-submission CPU cost from the hot loop.
-    batch: Mutex<Option<wgpu::CommandEncoder>>,
+    batch: Mutex<Option<Batch>>,
+}
+
+/// An open command batch: the encoder plus, while kernels are being recorded
+/// back to back, ONE compute pass that all of them share. A pass per kernel
+/// (the earlier design) costs a GPU-side encoder switch each — ~450 per decode
+/// token. WebGPU makes every dispatch its own synchronization scope, so
+/// dispatches that read a previous dispatch's output inside one pass are still
+/// correctly ordered (serial dispatch on Metal, barriers on Vulkan/DX12).
+pub(crate) struct Batch {
+    // Declared before `enc`: a pass must end before its encoder is finished.
+    pass: Option<wgpu::ComputePass<'static>>,
+    enc: wgpu::CommandEncoder,
 }
 
 impl WgpuContext {
@@ -147,12 +159,14 @@ impl WgpuContext {
     pub fn begin_batch(&self) {
         let mut batch = self.batch.lock().unwrap();
         if batch.is_none() {
-            *batch = Some(
-                self.device
+            *batch = Some(Batch {
+                pass: None,
+                enc: self
+                    .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                         label: Some("batch"),
                     }),
-            );
+            });
         }
     }
 
@@ -160,8 +174,9 @@ impl WgpuContext {
     /// open). [`WgpuContext::download_f32`] calls this automatically, so readbacks
     /// always observe every recorded kernel.
     pub fn flush_batch(&self) {
-        if let Some(enc) = self.batch.lock().unwrap().take() {
-            self.queue.submit(Some(enc.finish()));
+        if let Some(mut b) = self.batch.lock().unwrap().take() {
+            b.pass = None; // end the shared pass
+            self.queue.submit(Some(b.enc.finish()));
         }
     }
 
@@ -170,13 +185,65 @@ impl WgpuContext {
     /// behaviour, still used by tests and the Whisper engine).
     pub(crate) fn with_encoder(&self, f: impl FnOnce(&mut wgpu::CommandEncoder)) {
         let mut batch = self.batch.lock().unwrap();
-        if let Some(enc) = batch.as_mut() {
-            f(enc);
+        if let Some(b) = batch.as_mut() {
+            b.pass = None; // encoder-level commands (copies) end the shared pass
+            f(&mut b.enc);
         } else {
             let mut enc = self
                 .device
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             f(&mut enc);
+            self.queue.submit(Some(enc.finish()));
+        }
+    }
+
+    /// Record one dispatch: into the open batch's shared compute pass when a
+    /// batch is open (opening the pass if needed), otherwise in its own pass in
+    /// an ephemeral encoder submitted immediately.
+    pub(crate) fn record_dispatch(
+        &self,
+        label: &str,
+        pipeline: &wgpu::ComputePipeline,
+        bind_group: &wgpu::BindGroup,
+        groups: (u32, u32),
+    ) {
+        let mut batch = self.batch.lock().unwrap();
+        if let Some(b) = batch.as_mut() {
+            if !shared_pass_enabled() {
+                let mut pass = b.enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(label),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(groups.0, groups.1, 1);
+                return;
+            }
+            let pass = b.pass.get_or_insert_with(|| {
+                b.enc
+                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("batch"),
+                        timestamp_writes: None,
+                    })
+                    .forget_lifetime()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, bind_group, &[]);
+            pass.dispatch_workgroups(groups.0, groups.1, 1);
+        } else {
+            drop(batch);
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(label),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.dispatch_workgroups(groups.0, groups.1, 1);
+            }
             self.queue.submit(Some(enc.finish()));
         }
     }
@@ -237,4 +304,11 @@ impl WgpuContext {
     pub fn backend(&self) -> wgpu::Backend {
         self.backend
     }
+}
+
+/// One shared compute pass per batch (default). `SAPIENT_WGPU_SHARED_PASS=0`
+/// restores a pass per kernel, for A/B timing.
+fn shared_pass_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SAPIENT_WGPU_SHARED_PASS").as_deref() != Ok("0"))
 }

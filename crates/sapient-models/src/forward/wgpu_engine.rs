@@ -636,6 +636,7 @@ impl WgpuForwardEngine {
         if input_ids.is_empty() {
             bail!("forward_logits: empty input");
         }
+        let started = std::time::Instant::now();
         if !use_cache {
             self.cur_len = 0;
         }
@@ -651,8 +652,17 @@ impl WgpuForwardEngine {
         }
         let h = last.expect("non-empty");
         let lm = self.lm_head.as_ref().unwrap_or(&self.embed);
+        let recorded = std::time::Instant::now();
         let logits = mm(&self.ctx, &h, lm, 1, hidden, vocab);
-        Ok(self.ctx.download_f32(&logits)?)
+        let out = self.ctx.download_f32(&logits)?;
+        if input_ids.len() == 1 && wgpu_timing() {
+            eprintln!(
+                "[wgpu] token: record+submit {:.1} ms · lm_head+wait+readback {:.1} ms",
+                (recorded - started).as_secs_f64() * 1e3,
+                recorded.elapsed().as_secs_f64() * 1e3
+            );
+        }
+        Ok(out)
     }
 
     /// Logits for every position (resets the cache first).
@@ -674,4 +684,10 @@ impl WgpuForwardEngine {
         }
         Ok(out)
     }
+}
+
+/// `SAPIENT_WGPU_TIMING=1`: print per-token CPU recording vs GPU wait time.
+fn wgpu_timing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("SAPIENT_WGPU_TIMING").is_some())
 }

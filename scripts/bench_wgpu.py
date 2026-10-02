@@ -73,10 +73,12 @@ class Result:
         return self.decode_toks / self.decode_s if self.decode_s > 0 else 0.0
 
 
-def wait_health(port: int, timeout_s: float = 30.0) -> bool:
+def wait_health(port: int, proc: subprocess.Popen | None = None, timeout_s: float = 30.0) -> bool:
     url = f"http://127.0.0.1:{port}/v1/health"
     deadline = time.time() + timeout_s
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False  # the server exited (e.g. refused the backend)
         try:
             with urllib.request.urlopen(url, timeout=2) as r:
                 if r.status == 200:
@@ -104,7 +106,7 @@ def stream_chat(port: int, model: str, prompt: str, max_tokens: int) -> tuple[fl
     first_tok_t: float | None = None
     last_tok_t = start
     n_tokens = 0
-    with urllib.request.urlopen(req, timeout=300) as resp:
+    with urllib.request.urlopen(req, timeout=1800) as resp:  # first call may download the model
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
             if not line.startswith("data:"):
@@ -135,15 +137,35 @@ def stream_chat(port: int, model: str, prompt: str, max_tokens: int) -> tuple[fl
 def run_backend(binary: str, backend: str, model: str, prompt: str, tokens: int, port: int) -> Result | None:
     cmd = [binary, "serve", "--backend", backend, "--port", str(port)]
     print(f"\n=== {backend} ===\n$ {' '.join(cmd)}")
-    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
+    )
     try:
-        if not wait_health(port):
-            print(f"  server did not become healthy — skipping {backend}")
+        if not wait_health(port, proc):
+            # `serve` refuses a backend this binary cannot run (e.g. `metal` without
+            # the MLX build) and says why on stderr — show that instead of a bare skip.
+            reason = ""
+            if proc.poll() is not None and proc.stderr:
+                reason = proc.stderr.read().strip().splitlines()[-1:] or [""]
+                reason = reason[0]
+            print(f"  skipping {backend}: {reason or 'server did not become healthy'}")
             return None
-        print("  warmup (downloads/loads the model on first request)…")
-        stream_chat(port, model, prompt, max_tokens=8)  # warmup excludes load time
-        print("  timing…")
-        ttft, n, decode_s = stream_chat(port, model, prompt, max_tokens=tokens)
+        try:
+            print("  warmup (downloads/loads the model on first request)…")
+            stream_chat(port, model, prompt, max_tokens=8)  # warmup excludes load time
+            print("  timing…")
+            ttft, n, decode_s = stream_chat(port, model, prompt, max_tokens=tokens)
+        except urllib.error.HTTPError as e:
+            body = e.read().decode("utf-8", "replace")
+            try:
+                body = json.loads(body)["error"]["message"]
+            except (ValueError, KeyError, TypeError):
+                pass
+            print(f"  skipping {backend}: HTTP {e.code}: {body}")
+            return None
+        except (urllib.error.URLError, TimeoutError) as e:
+            print(f"  skipping {backend}: {e}")
+            return None
         if n == 0:
             print(f"  no tokens produced — skipping {backend}")
             return None

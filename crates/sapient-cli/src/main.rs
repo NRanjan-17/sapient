@@ -1014,9 +1014,12 @@ async fn chat_command(
     };
     ui::print_chat_banner(model, &arch, &effective_backend);
 
-    // Hint: if the user loaded a full-precision safetensors model, suggest the
-    // GGUF-quantized alternative which is 4-10× faster on CPU.
-    if !model.contains("gguf") && !model.contains("-q4") && !model.contains("-q8") {
+    // Hint: if the user loaded a full-precision safetensors model on the CPU,
+    // suggest the GGUF-quantized alternative. Measured on an Apple M4 CPU
+    // (2026-10-02): qwen2.5-0.5b 44 → 113 tok/s decode. Not shown for GPU
+    // backends, where it is not reliably faster (wgpu measured slower).
+    let on_cpu = effective_backend.starts_with("cpu");
+    if on_cpu && !model.contains("gguf") && !model.contains("-q4") && !model.contains("-q8") {
         // Look for a quantized alias in the registry (e.g. phi-2 → phi-2-q4)
         let gguf_hint = sapient_hub::registry::catalog()
             .iter()
@@ -1034,7 +1037,8 @@ async fn chat_command(
             .map(|m| m.alias);
         if let Some(faster) = gguf_hint {
             ui::hint(format!(
-                "For 4-8× faster inference use the quantized version:  sapient chat {faster}"
+                "The quantized version is about 2–3× faster on CPU and half the download:  \
+                 sapient chat {faster}"
             ));
         }
     }

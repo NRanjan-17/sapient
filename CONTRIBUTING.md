@@ -113,9 +113,12 @@ cargo build --release -p sapient-cli
 If you use `just`:
 
 ```bash
-just build      # debug build
-just release    # release build
-just --list     # all tasks
+# debug build
+just build
+# release build
+just release
+# all tasks
+just --list
 ```
 
 ---
@@ -397,6 +400,16 @@ measures the Q8_0 GEMM's throughput. On real data: run
 once (downloads `lerobot/svla_so100_pickplace`, ~0.5 GB), then
 `cargo test -p sapient-generate --release --test vla_e2e smolvla_real -- --ignored --nocapture`.
 
+Profiling the wgpu engine: `SAPIENT_WGPU_TIMING=1 sapient chat <model> --backend wgpu -p "…"`
+prints CPU recording vs GPU time per token; `SAPIENT_WGPU_SHARED_PASS=0` reverts to one
+compute pass per kernel for A/B. Compare backends end to end with
+`python3 scripts/bench_wgpu.py` (needs a `--features wgpu` build). The decode GEMV
+shaders' `LANES`/`ROWS` were tuned on an Apple M4 only — report Vulkan/DX12 numbers if
+you change them.
+
+Shell examples in docs: never put a `# comment` after a command on the same line —
+zsh (the macOS default) passes it as arguments. Put comments on their own line.
+
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
 kernel changes on a small-cache ARM board as well as an M-series Mac: a loop that
@@ -421,8 +434,10 @@ just bench
 CI enforces both. PRs that fail these checks will not merge.
 
 ```bash
-cargo fmt --all              # auto-format
-cargo fmt --all -- --check   # CI check (no writes)
+# auto-format
+cargo fmt --all
+# CI check (no writes)
+cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
@@ -562,8 +577,10 @@ Fast downloads are controlled by `LoadOptions` and env vars (see README **Fast D
 
 ```bash
 SAPIENT_HUB_MAX_PARALLEL=4 sapient pull <model>
-SAPIENT_FAST_DOWNLOAD=0 sapient pull <model>   # sequential mode
-sapient -v pull <model>                        # verbose logs + file paths
+# sequential mode
+SAPIENT_FAST_DOWNLOAD=0 sapient pull <model>
+# verbose logs + file paths
+sapient -v pull <model>
 ```
 
 When debugging Hub issues:
@@ -583,7 +600,8 @@ Releases are automated via GitHub Actions when a semver tag is pushed:
 #    and Formula/sapient.rb if needed
 
 # 2. Commit, tag, push
-git tag v0.3.2   # use actual version
+# use actual version
+git tag v0.3.2
 git push origin main
 git push origin v0.3.2
 ```

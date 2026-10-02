@@ -101,13 +101,14 @@ mod macos {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use objc::runtime::{Object, BOOL, YES};
-    use objc::{class, msg_send, sel, sel_impl};
+    use block2::RcBlock;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use objc2::{class, msg_send};
 
     #[link(name = "AVFoundation", kind = "framework")]
     extern "C" {
         /// `AVMediaTypeAudio` (an `NSString *`) — the media type we request.
-        static AVMediaTypeAudio: *const Object;
+        static AVMediaTypeAudio: *const AnyObject;
     }
 
     // AVAuthorizationStatus values (AVFoundation).
@@ -119,7 +120,7 @@ mod macos {
     pub fn request() -> super::MicPermission {
         use super::MicPermission;
         unsafe {
-            let cls = class!(AVCaptureDevice);
+            let cls: &AnyClass = class!(AVCaptureDevice);
             let status: isize = msg_send![cls, authorizationStatusForMediaType: AVMediaTypeAudio];
             match status {
                 AUTHORIZED => return MicPermission::Granted,
@@ -130,13 +131,14 @@ mod macos {
 
             // Undetermined → raise the system prompt and wait for the user.
             let (tx, rx) = mpsc::channel::<bool>();
-            let handler = block::ConcreteBlock::new(move |granted: BOOL| {
-                let _ = tx.send(granted == YES);
+            let handler = RcBlock::new(move |granted: Bool| {
+                let _ = tx.send(granted.as_bool());
             });
-            let handler = handler.copy();
-            let _: () = msg_send![cls,
-                requestAccessForMediaType: AVMediaTypeAudio
-                completionHandler: &*handler];
+            let _: () = msg_send![
+                cls,
+                requestAccessForMediaType: AVMediaTypeAudio,
+                completionHandler: &*handler
+            ];
 
             match rx.recv_timeout(Duration::from_secs(120)) {
                 Ok(true) => MicPermission::Granted,
