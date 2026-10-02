@@ -18,6 +18,20 @@ section below as the GitHub release body.
 - `misaki-rs` is vendored under `vendor/misaki-rs` (MIT) with those changes; see its
   `VENDORED.md` and `NOTICE`.
 
+### 🤖 SmolVLA — robot actions (experimental)
+
+- New `sapient act <image>... --task "…" [--state a,b,c] [--json]`: runs the SmolVLA
+  vision-language-action policy (`lerobot/smolvla_base`, 450M) and prints a chunk of 50
+  future actions. One or more camera images, an instruction, and the robot state go in.
+- Checked against LeRobot's PyTorch implementation at every stage (image embedding,
+  prefix K/V, one flow-matching step, the final chunk): the actions match to 4e-6 on the
+  same inputs and start noise. `scripts/gen_smolvla_fixture.py` regenerates the reference.
+- First cut: CPU, f32 weights, about 2.0 s per chunk on an Apple M4 with one camera
+  (vision 0.7 s, prefix 0.2 s, 10 denoising steps 1.0 s). Not yet quantized or tuned.
+- The base checkpoint is a pretraining model meant for fine-tuning and ships no plain
+  state/action statistics, so its actions are in normalized space; checkpoints that carry
+  `observation.state.*` / `action.*` statistics are normalized and un-normalized.
+
 ### 👁️ SmolVLM2-500M
 
 - `sapient see --model smolvlm2-500m`: the SmolVLM2 family loads through the existing

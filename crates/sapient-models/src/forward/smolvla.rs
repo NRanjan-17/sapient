@@ -297,15 +297,22 @@ impl SmolVla {
         lang_tokens: &[u32],
         state: &[f32],
     ) -> Result<Vec<f32>> {
-        let h = self.cfg.vlm_hidden;
-        let scale = (h as f32).sqrt();
+        let scale = (self.cfg.vlm_hidden as f32).sqrt();
         let mut embs = Vec::new();
         for pixels in images {
             embs.extend(self.embed_image(pixels)?.into_iter().map(|v| v * scale));
         }
+        embs.extend(self.embed_language_and_state(lang_tokens, state)?);
+        Ok(embs)
+    }
+
+    /// The non-image tail of the prefix: language token embeddings (×√hidden)
+    /// followed by the single state token.
+    pub fn embed_language_and_state(&self, lang_tokens: &[u32], state: &[f32]) -> Result<Vec<f32>> {
+        let scale = (self.cfg.vlm_hidden as f32).sqrt();
         let table = self.get(&format!("{TEXT}.embed_tokens.weight"))?;
         let lang = embed_tokens(table, lang_tokens)?;
-        embs.extend(lang.as_f32_slice().iter().map(|v| v * scale));
+        let mut embs: Vec<f32> = lang.as_f32_slice().iter().map(|v| v * scale).collect();
 
         if state.len() > self.cfg.max_state_dim {
             bail!(

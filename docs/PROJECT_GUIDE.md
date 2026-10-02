@@ -790,6 +790,15 @@ either with `SAPIENT_VLM_MODEL=<alias>`. For the vision tower (`sapient see`), `
 breakdown (norm / q,k,v / attention / out_proj / fc1 / GELU / fc2) — see the
 2026-10-02 vision section of `docs/BENCHMARKS.md`.
 
+**Robot actions — SmolVLA (`sapient act`, experimental).** `sapient act <image>...
+--task "…" [--state a,b,c] [--seed N] [--json]` loads `lerobot/smolvla_base` and prints a
+chunk of 50 actions with a timing split (vision / prefix / denoise). Code:
+`sapient-models/src/forward/smolvla.rs` (the network — prefix K/V cache, action expert,
+flow matching) and `sapient-generate/src/vla.rs` (`VlaPipeline` — image resize-with-pad,
+tokenizer, normalization, seeded noise). Both are checked against LeRobot reference
+outputs (`tests/smolvla_reference.rs`, `tests/vla_e2e.rs`; fixture from
+`scripts/gen_smolvla_fixture.py`). First cut: CPU, f32, ~2.0 s per chunk on an M4.
+
 `bench-llm` also accepts a local `.gguf` path. Metrics reported: model load time,
 time-to-first-token (prefill + first token), **decode-only** tok/s
 (`(tokens − 1) / (t_last − t_first)`, greedy, exact token count), and peak RSS
