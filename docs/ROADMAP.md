@@ -76,7 +76,8 @@
   `fast` RMS 0.019 vs LeRobot-bf16 0.011, offline prediction error unchanged by any
   mode; `AsyncActions` + `sapient act --simulate` — stall-free at 30 Hz on M4 and 5 Hz
   on Pi 5. Open VLA rungs: a fine-tuned checkpoint + simulator for task success, the
-  expert's per-step overhead, smarter async (latency-aware threshold), jitter under load,
+  expert's per-step overhead, jitter under load (latency-aware async threshold shipped:
+  `--threshold auto` matches the best fixed setting at 5–30 Hz on M4 and Pi 5),
   asynchronous chunk execution, a real dataset and task success, a fine-tuned checkpoint
   with real normalization statistics, catalog entry. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five

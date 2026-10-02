@@ -79,8 +79,9 @@ pub use speak::{SpeakPipeline, DEFAULT_ORPHEUS_VOICE, ORPHEUS_VOICES};
 pub use speculative::SpeculativePipeline;
 pub use transcribe::{TranscribeOptions, TranscribePipeline};
 pub use vla::{ActionChunk, SmolVlaQuant, VlaPipeline, VlaPrecision, VlaTiming, SMOLVLA_REPO};
+pub use vla_async::auto_trigger;
 pub use vla_async::{
     simulate as simulate_async_actions, Aggregate, AsyncActions, AsyncConfig, AsyncStats,
-    ChunkPolicy, Observation, SimulationReport, Tick,
+    ChunkPolicy, Observation, SimulationReport, Threshold, Tick,
 };
 pub use vlm::{VlmPipeline, VlmStats};

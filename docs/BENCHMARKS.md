@@ -1120,6 +1120,33 @@ chunk. At 30 Hz a 50-action chunk lasts 1.7 s, half the Pi's 3.3 s inference, so
 async keeps throwing away most of each chunk and is worse than waiting; use T = 0
 there. A Pi 5 runs SmolVLA without stalls at 5 Hz; an M4 at 30 Hz.
 
+### Automatic async threshold (2026-10-02)
+
+`--threshold auto` (now the default) picks when to request the next chunk from the
+measured inference latency `d` in control ticks (worst of the last five) and the chunk
+length `c` = 50 (`auto_trigger` in `vla_async.rs`):
+
+- `d ≤ c/2`: request when `d + 20% + 2` actions remain — just in time; no stalls and
+  the fewest chunks computed.
+- `c/2 < d < c`: request at once; settles at `1 − c/(2d)` stalled, better than waiting.
+- `d ≥ c`: synchronous (request only when empty, run all 50).
+
+The two non-trivial regimes follow from aligning chunks by executed actions: a chunk
+requested with `q` actions queued arrives with `c − min(q, d)` usable ones. The
+formulas predict the earlier fixed-threshold Pi runs within 2 points (10 Hz: 24%
+predicted, 22.7% measured; 15 Hz: equal for both, 45.6% both).
+
+| Machine | Rate | Latency | `auto` chose | Stalls | Best fixed threshold |
+|---|---|---|---|---|---|
+| Apple M4 | 30 Hz | ≤ 24 ticks | ≤ 24 queued | 0.0%, 36 chunks | 0.0% (T = 1: 46 chunks) |
+| Pi 5 | 30 Hz | 100 ticks | synchronous | 63.7% | 63.7% (T = 0) |
+| Pi 5 | 15 Hz | 50 ticks | synchronous | 45.5% | 45.6% |
+| Pi 5 | 10 Hz | 34 ticks | ≤ 42 queued (at once) | 23.7% | 22.7% (T = 0.5) |
+| Pi 5 | 5 Hz | 17 ticks | ≤ 22 queued | 0.0%, 6 chunks | 0.0% (T = 0.5: 7 chunks) |
+
+`auto` matches the best fixed threshold at every rate measured (10 Hz: 1 point, within
+run-to-run spread) without knowing the machine or the rate in advance.
+
 ---
 
 ## Binary & deployment

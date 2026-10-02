@@ -51,7 +51,12 @@ section below as the GitHub release body.
 - `sapient act --simulate --hz H [--threshold T]`: a control loop that computes the next
   chunk while the current one executes (`AsyncActions` in the library) and reports
   stalls and inference latency. No stalls at 30 Hz on an Apple M4 or at 5 Hz on a
-  Raspberry Pi 5; at 30 Hz on the Pi waiting for each chunk (`--threshold 0`) is better.
+  Raspberry Pi 5.
+- `--threshold auto` (default) picks when to request the next chunk from the measured
+  latency: just in time when inference is fast, at once when it is moderately slow,
+  and synchronous when it is slower than a chunk. It matched the best fixed setting at
+  every rate tested on the M4 and the Pi 5, and computes ~20% fewer chunks than
+  requesting as early as possible.
 
 ### ⚡ Faster 8-bit matrix multiply
 
