@@ -387,7 +387,12 @@ virtual environment — LeRobot is not a dependency of this repository). A chang
 engine that moves the action chunk must report the new error against the fixture: the
 `smolvla_quantized_action_error` test in `smolvla_reference` prints max and RMS action
 error plus timings for each quantization choice, and guards them at twice the measured
-values. The f32 path must stay within 1e-4.
+values. The f32 path must stay within 1e-4. One observation is a noisy sample of the
+quantization error, so judge accuracy changes with
+`smolvla_quantized_error_over_observations` (eight observations, f32 engine as
+reference); `scripts/smolvla_bf16_yardstick.py` gives LeRobot's own bf16 deviation on
+the same observations. `tests/q8_gemm_bench.rs` in `sapient-backends-cpu` (ignored)
+measures the Q8_0 GEMM's throughput.
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure

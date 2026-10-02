@@ -139,6 +139,9 @@ pub struct SmolVlaQuant {
     pub vlm: bool,
     /// The action expert (run `num_steps` times per chunk).
     pub expert: bool,
+    /// Vectorized polynomial `exp` in the vision tower's softmax and GELU
+    /// (`SiglipVision::with_fast_math`) instead of libm calls.
+    pub fast_math: bool,
 }
 
 impl SmolVlaQuant {
@@ -147,11 +150,13 @@ impl SmolVlaQuant {
         vision: false,
         vlm: false,
         expert: false,
+        fast_math: false,
     };
     pub const ALL: Self = Self {
         vision: true,
         vlm: true,
         expert: true,
+        fast_math: true,
     };
 }
 
@@ -221,10 +226,12 @@ impl SmolVla {
                     let vision = rest.starts_with("model.vision_model")
                         || rest.starts_with("model.connector");
                     let t = if vision {
+                        // Widen to f32 once here: the float matmul would
+                        // otherwise convert a BF16 weight on every call.
                         if quant.vision && t.shape().dims().len() == 2 {
                             prepare(rest, t, true)
                         } else {
-                            Ok(t)
+                            to_f32(t)
                         }
                     } else if rest.ends_with("embed_tokens.weight") {
                         Ok(t)
@@ -317,7 +324,13 @@ impl SmolVla {
             scale_factor: ((proj_in / pos[1]) as f64).sqrt() as usize,
             text_hidden: cfg.vlm_hidden,
         };
-        let vision = SiglipVision::new(vcfg, vision_w)?;
+        // `SAPIENT_VLA_FAST_MATH=0|1` overrides for A/B timing.
+        let fast_math = match std::env::var("SAPIENT_VLA_FAST_MATH").as_deref() {
+            Ok("0") => false,
+            Ok("1") => true,
+            _ => quant.fast_math,
+        };
+        let vision = SiglipVision::new(vcfg, vision_w)?.with_fast_math(fast_math);
         Ok(Self { cfg, vision, w })
     }
 

@@ -943,6 +943,70 @@ Notes:
   coexist. Served (`POST /v1/actions`, policy resident): 0.89 s per call, HTTP overhead
   about 2 ms; two cameras 1.46 s.
 
+### Correction and update (2026-10-03): error over eight observations, new kernel, Pi 5
+
+**The single-observation error above understated the quantization error about 3×.**
+Measured again over eight varied observations (different image, instruction, state and
+start noise; `smolvla_quantized_error_over_observations`), against the f32 engine, which
+itself matches LeRobot to 4e-6. LeRobot's own default precision (bf16) was run on the
+same eight observations with `scripts/smolvla_bf16_yardstick.py`. Reference action RMS
+is 0.36.
+
+| Linears stored as Q8_0 | Max error | RMS error | RMS vs LeRobot bf16 |
+|---|---|---|---|
+| LeRobot bf16 default (yardstick) | 1.1e-1 | 4.6e-3 | 1.0× |
+| action expert only (`balanced`) | 6.2e-2 | 4.2e-3 | 0.9× |
+| vision tower only | 1.1e-1 | 6.7e-3 | 1.5× |
+| VLM text layers only | 9.1e-2 | 8.4e-3 | 1.8× |
+| vision + expert | 8.0e-2 | 7.6e-3 | 1.7× |
+| all | 1.6e-1 | 1.1e-2 | 2.5× |
+| all + vectorized softmax/GELU (`fast`, default) | 1.6e-1 | 1.3e-2 | 2.8× |
+| f32 + vectorized softmax/GELU | 5.6e-6 | 3.7e-7 | — |
+
+Per-observation RMS ranges from 4e-3 to 2.2e-2 for the all-Q8_0 rows, so differences of
+20–30% between rows are within the spread (the vectorized math changes the f32 result by
+4e-7; the 1.1e-2 → 1.3e-2 step is not caused by it). Eight synthetic observations are
+still not a dataset, and none of this measures task success.
+
+**Q8_0 GEMM kernel (bit-identical).** `matmul_nt` with Q8_0 weights, m ≥ 8, Apple M4:
+
+| Shape (m × k → n) | Before, 1 thread | After, 1 thread | Before, 10 threads | After, 10 threads |
+|---|---|---|---|---|
+| tower q/k/v 1024 × 768 → 768 | 82 GMAC/s | 99 | 220 | 528–546 |
+| tower fc1 1024 × 768 → 3072 | 84 | 126 | 362 | 667–681 |
+| tower fc2 1024 × 3072 → 768 | 81 | 112 | 365 | 563–573 |
+| expert gate/up 50 × 736 → 2048 | 91 | 108 | 255 | 375–398 |
+| prefix MLP 78 × 960 → 2560 | 98 | 116 | 367 | 465–517 |
+
+Three changes: a 4 weight-row × 4 activation-row tile (`dot_q8_0_4rows_sdot_x4` — the
+old 1 × 4 tile issued 12 vector loads per 8 `sdot`s), output written in place instead of
+into a transposed scratch buffer, and 8 tasks per thread instead of 4. The tile alone on
+cache-resident data runs 134 GMAC/s on a performance core (1 × 4 tile: 120); the
+per-32-block scale combine caps the format near there. Source:
+`crates/sapient-backends/cpu/tests/q8_gemm_bench.rs`. The vision tower's bias add was
+also made row-wise and parallel (it cost as much as the GEMM for a 1024 × 3072 linear).
+
+A single-scale-per-row int8 format (pure integer accumulation, no per-block combine)
+was simulated and **rejected**: per-row activation scales alone gave action RMS 1.5e-2 on
+the fixture observation with exact weights, and clipping outliers made it far worse
+(RMS 0.11–0.20).
+
+**SmolVLA per chunk, one camera, 10 steps** (best of 2–3 runs, policy loaded):
+
+| | M4 before | M4 now | Pi 5 before | Pi 5 now |
+|---|---|---|---|---|
+| `fast` (default) | 0.93 s | **0.66 s** | 5.15 s | **3.65 s** |
+| `balanced` | — | 1.02 s | — | 5.9 s |
+| `exact` (f32) | 1.83 s | 1.73 s | — | 11.9 s |
+
+Pi 5 `fast` split: vision 2.29 s (attention 0.86, fc1 0.39, q/k/v 0.37, fc2 0.36,
+out_proj 0.14, GELU 0.09, norm 0.07), prefix 0.20 s, denoise 1.16 s (linears 0.86).
+Two cameras on the Pi: 6.25 s. The vectorized softmax/GELU saves 0.17 s on the Pi
+(GELU 183 → 91 ms; attention is bound by its f32 GEMM, not by `exp`) and about 25 ms on
+the M4. Pi 5: 16 GB board, 47 °C idle, 71 °C after the runs, passive cooling state not
+recorded. `sapient see` image encode on the M4 (same kernel, exact math): 555 → about
+397 ms, replies unchanged.
+
 ---
 
 ## Binary & deployment

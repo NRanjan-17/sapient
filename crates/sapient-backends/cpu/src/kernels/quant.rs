@@ -576,6 +576,125 @@ pub unsafe fn dot_q8_0_row_sdot_x4(
     out
 }
 
+/// FOUR weight rows × FOUR activation rows per pass (the 4×4 GEMM tile).
+///
+/// [`dot_q8_0_row_sdot_x4`] re-loads the four activation rows' 32 bytes for
+/// every weight row: 12 vector loads per 8 `sdot`s, which is what bounds it
+/// (measured ~85 GMAC/s on an M4 performance core, well under the `sdot`
+/// rate). Here the four weight rows' blocks stay in registers while each
+/// activation row is loaded once per block: ~20 loads per 32 `sdot`s.
+///
+/// For activation row `r`, the four weight rows' block dots are reduced into
+/// one `int32x4` (lane `l` = weight row `l`), converted once and combined with
+/// the four weight scales as a vector.
+///
+/// * `ws_t` — the weight scales **block-major** over this group's chunk: entry
+///   `[bi * ws_stride + ws_col + l]` is weight row `l`'s scale for block `bi`.
+/// * `x_scales_t` — activation scales block-major, as in the x4 kernel.
+///
+/// Returns `out[r][l]` = activation row `r` · weight row `l`.
+///
+/// Bit-identical to sixteen [`dot_q8_0_row_sdot`] calls: integer dots are
+/// exact, and every lane evaluates `acc + (w_scale · x_scale) · dot` with a
+/// separate multiply and add, blocks in the same order.
+///
+/// # Safety
+/// Each weight row must hold `k/32` Q8_0 blocks and each activation row `k`
+/// values; `ws_t` / `x_scales_t` must cover `ws_col + 4 <= ws_stride` and
+/// `col + 4 <= stride` for every block. Requires `dotprod`.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "neon,dotprod")]
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn dot_q8_0_4rows_sdot_x4(
+    w_rows: [&[u8]; 4],
+    ws_t: &[f32],
+    ws_stride: usize,
+    ws_col: usize,
+    x_i8: [&[i8]; 4],
+    x_scales_t: &[f32],
+    stride: usize,
+    col: usize,
+) -> [[f32; 4]; 4] {
+    use std::arch::aarch64::*;
+    let nblocks = w_rows[0].len() / Q8_0_BLOCK_BYTES;
+    debug_assert!(col + 4 <= stride && ws_col + 4 <= ws_stride);
+    debug_assert!(ws_t.len() >= (nblocks - 1) * ws_stride + ws_col + 4);
+    debug_assert!(x_scales_t.len() >= (nblocks - 1) * stride + col + 4);
+    // One activation row against the four resident weight rows: 8 `sdot`s into
+    // four fresh accumulators, reduced to one vector (lane l = weight row l).
+    // A macro, not a loop over `r`: the accumulators must stay in registers
+    // (as an array they were kept on the stack — a store/load per block).
+    macro_rules! x_row {
+        ($acc:ident, $r:literal, $w:ident, $ws:ident, $xs:ident, $x_off:ident) => {{
+            debug_assert!(x_i8[$r].len() >= $x_off + QK);
+            let x_ptr = x_i8[$r].as_ptr().add($x_off);
+            let x0 = vld1q_s8(x_ptr);
+            let x1 = vld1q_s8(x_ptr.add(16));
+            let (mut d0, mut d1) = (vdupq_n_s32(0i32), vdupq_n_s32(0i32));
+            let (mut d2, mut d3) = (vdupq_n_s32(0i32), vdupq_n_s32(0i32));
+            core::arch::asm!(
+                "sdot {d0:v}.4s, {w0:v}.16b, {x0:v}.16b",
+                "sdot {d1:v}.4s, {w2:v}.16b, {x0:v}.16b",
+                "sdot {d2:v}.4s, {w4:v}.16b, {x0:v}.16b",
+                "sdot {d3:v}.4s, {w6:v}.16b, {x0:v}.16b",
+                "sdot {d0:v}.4s, {w1:v}.16b, {x1:v}.16b",
+                "sdot {d1:v}.4s, {w3:v}.16b, {x1:v}.16b",
+                "sdot {d2:v}.4s, {w5:v}.16b, {x1:v}.16b",
+                "sdot {d3:v}.4s, {w7:v}.16b, {x1:v}.16b",
+                d0 = inout(vreg) d0,
+                d1 = inout(vreg) d1,
+                d2 = inout(vreg) d2,
+                d3 = inout(vreg) d3,
+                w0 = in(vreg) $w.0,
+                w1 = in(vreg) $w.1,
+                w2 = in(vreg) $w.2,
+                w3 = in(vreg) $w.3,
+                w4 = in(vreg) $w.4,
+                w5 = in(vreg) $w.5,
+                w6 = in(vreg) $w.6,
+                w7 = in(vreg) $w.7,
+                x0 = in(vreg) x0,
+                x1 = in(vreg) x1,
+                options(nomem, nostack),
+            );
+            // Lane l = Σ d_l (exact integer sums, any order).
+            let dots = vpaddq_s32(vpaddq_s32(d0, d1), vpaddq_s32(d2, d3));
+            let sc = vmulq_laneq_f32::<$r>($ws, $xs);
+            $acc = vaddq_f32($acc, vmulq_f32(sc, vcvtq_f32_s32(dots)));
+        }};
+    }
+    let (mut a0, mut a1) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+    let (mut a2, mut a3) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+    let wp = |l: usize, off: usize| (w_rows[l].as_ptr().add(off)) as *const i8;
+    for bi in 0..nblocks {
+        let w_off = bi * Q8_0_BLOCK_BYTES + 2;
+        debug_assert!(w_rows.iter().all(|w| w.len() >= w_off + QK));
+        let w = (
+            vld1q_s8(wp(0, w_off)),
+            vld1q_s8(wp(0, w_off + 16)),
+            vld1q_s8(wp(1, w_off)),
+            vld1q_s8(wp(1, w_off + 16)),
+            vld1q_s8(wp(2, w_off)),
+            vld1q_s8(wp(2, w_off + 16)),
+            vld1q_s8(wp(3, w_off)),
+            vld1q_s8(wp(3, w_off + 16)),
+        );
+        let ws = vld1q_f32(ws_t.as_ptr().add(bi * ws_stride + ws_col));
+        let xs = vld1q_f32(x_scales_t.as_ptr().add(bi * stride + col));
+        let x_off = bi * QK;
+        x_row!(a0, 0, w, ws, xs, x_off);
+        x_row!(a1, 1, w, ws, xs, x_off);
+        x_row!(a2, 2, w, ws, xs, x_off);
+        x_row!(a3, 3, w, ws, xs, x_off);
+    }
+    let mut out = [[0.0f32; 4]; 4];
+    vst1q_f32(out[0].as_mut_ptr(), a0);
+    vst1q_f32(out[1].as_mut_ptr(), a1);
+    vst1q_f32(out[2].as_mut_ptr(), a2);
+    vst1q_f32(out[3].as_mut_ptr(), a3);
+    out
+}
+
 /// Widen a Q8_0 weight row's per-block f16 scales to f32 into `out` (one per
 /// block). Same conversion the row kernels do inline.
 pub fn q8_0_row_scales(row_blocks: &[u8], out: &mut [f32]) {
@@ -3132,6 +3251,72 @@ mod tests {
         };
         for r in 0..4 {
             assert_eq!(x4[r].to_bits(), singles[r].to_bits(), "row {r} differs");
+        }
+    }
+
+    // The 4×4 tile (four weight rows × four activation rows) must equal sixteen
+    // single-row kernel calls bit for bit — same reason as the x4 test above.
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn sdot_q8_0_4rows_x4_matches_single_row() {
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            eprintln!("dotprod not available — skipping SDOT 4x4 test");
+            return;
+        }
+        let k = 736; // 23 blocks — the zero-padded SmolVLA expert width
+        let bpr = k / 32;
+        let w: Vec<Vec<u8>> = (0..4)
+            .map(|l| {
+                let wf: Vec<f32> = (0..k)
+                    .map(|i| ((i * (37 + 6 * l) % 101) as f32 - 50.0) * 0.011 * (l + 1) as f32)
+                    .collect();
+                q8_0_weight_row(&wf)
+            })
+            .collect();
+        let rows: Vec<(Vec<i8>, Vec<f32>)> = (0..4)
+            .map(|r| {
+                let mut xf: Vec<f32> = (0..k)
+                    .map(|i| ((i * (r + 3) * 13 % 97) as f32 - 48.0) * 0.07)
+                    .collect();
+                xf[(r * 191) % k] = 40.0; // per-row outlier in a different block
+                quantize_row_to_i8_blocks(&xf)
+            })
+            .collect();
+        // Block-major scales with strides wider than 4 and non-zero columns,
+        // as the blocked GEMM passes them.
+        let (stride, col) = (7usize, 2usize);
+        let mut xs_t = vec![f32::NAN; bpr * stride];
+        let (ws_stride, ws_col) = (9usize, 5usize);
+        let mut ws_t = vec![f32::NAN; bpr * ws_stride];
+        for l in 0..4 {
+            let mut ws = vec![0.0f32; bpr];
+            q8_0_row_scales(&w[l], &mut ws);
+            for bi in 0..bpr {
+                ws_t[bi * ws_stride + ws_col + l] = ws[bi];
+                xs_t[bi * stride + col + l] = rows[l].1[bi];
+            }
+        }
+        let tile = unsafe {
+            dot_q8_0_4rows_sdot_x4(
+                [&w[0], &w[1], &w[2], &w[3]],
+                &ws_t,
+                ws_stride,
+                ws_col,
+                [&rows[0].0, &rows[1].0, &rows[2].0, &rows[3].0],
+                &xs_t,
+                stride,
+                col,
+            )
+        };
+        for (r, (xi, xs)) in rows.iter().enumerate() {
+            for l in 0..4 {
+                let single = unsafe { dot_q8_0_row_sdot(&w[l], xi, xs) };
+                assert_eq!(
+                    tile[r][l].to_bits(),
+                    single.to_bits(),
+                    "activation row {r}, weight row {l}"
+                );
+            }
         }
     }
 

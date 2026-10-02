@@ -67,8 +67,11 @@
   inputs zero-padded to 736), last prefix layer's unused attention/MLP skipped, cross
   K/V projected once per observation → M4 1.83 s (f32) → **0.93 s** per chunk, action
   error max 0.035 vs LeRobot-bf16's own 0.014; `POST /v1/actions` in `sapient serve`.
-  Open VLA rungs: latency + jitter benchmark on M4 and Pi 5, the vision tower (now 57%
-  of a chunk), asynchronous chunk execution, error measured over many observations, a fine-tuned checkpoint
+  **Kernel + Pi (2026-10-03):** bit-identical 4×4-tile Q8_0 GEMM (1.5–2.4× on M4 at 10
+  threads), `fast | balanced | exact` precision modes, error measured over eight
+  observations against LeRobot's bf16 yardstick → M4 **0.66 s**, **Pi 5 3.65 s** per
+  chunk (`fast`). Open VLA rungs: the Pi tower's attention (f32 GEMM-bound), jitter,
+  asynchronous chunk execution, a real dataset and task success, a fine-tuned checkpoint
   with real normalization statistics, catalog entry. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five
   bit-identical kernel changes; open: the Q8_0 per-block f32 scale tail, the

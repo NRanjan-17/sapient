@@ -26,11 +26,13 @@ section below as the GitHub release body.
 - Checked against LeRobot's PyTorch implementation at every stage (image embedding,
   prefix K/V, one flow-matching step, the final chunk): the actions match to 4e-6 on the
   same inputs and start noise. `scripts/gen_smolvla_fixture.py` regenerates the reference.
-- **8-bit weights by default**: about 0.9 s per chunk on an Apple M4 CPU with one camera
-  (vision 0.53 s, prefix 0.05 s, 10 denoising steps 0.33 s), against 1.8 s for f32
-  (`--f32`). The 8-bit path moves the actions by at most 0.035 (RMS 0.004) in
-  normalized units on the test observation; LeRobot's own default bf16 precision moves
-  them by 0.014 (RMS 0.002).
+- **Three precisions** (`--precision fast|balanced|exact`, also `"precision"` in the
+  serve request). Per chunk, one camera: `fast` (all 8-bit, default) 0.66 s on an Apple
+  M4 and 3.7 s on a Raspberry Pi 5; `balanced` (8-bit action expert only) 1.0 s / 5.9 s;
+  `exact` (f32) 1.7 s / 11.9 s.
+- Action error over eight synthetic observations (RMS, normalized units, typical action
+  magnitude 0.36): `fast` 0.012, `balanced` 0.004; LeRobot's own default bf16 precision
+  0.005 on the same observations. Task success is not measured.
 - **`sapient serve` endpoint** `POST /v1/actions` (`task`, `images` as base64 data URIs,
   optional `state`, `seed`, `steps`): the policy stays loaded, so a call costs inference
   only. `sapient serve lerobot/smolvla_base` preloads it.
@@ -39,6 +41,13 @@ section below as the GitHub release body.
 - The base checkpoint is a pretraining model meant for fine-tuning and ships no plain
   state/action statistics, so its actions are in normalized space; checkpoints that carry
   `observation.state.*` / `action.*` statistics are normalized and un-normalized.
+
+### ⚡ Faster 8-bit matrix multiply
+
+- The Q8_0 GEMM used by vision towers, prefill and SmolVLA is 1.5–2.4× faster on an
+  Apple M4 at 10 threads, with bit-identical results (4×4 register tile, in-place
+  output, finer task split). `sapient see` image encode: about 555 → 397 ms on the M4.
+  On a Raspberry Pi 5 a SmolVLA chunk went from 5.15 s to 3.65 s.
 
 ### 👁️ SmolVLM2-500M
 

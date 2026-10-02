@@ -798,8 +798,9 @@ flow matching) and `sapient-generate/src/vla.rs` (`VlaPipeline` — image resize
 tokenizer, normalization, seeded noise). Both are checked against LeRobot reference
 outputs (`tests/smolvla_reference.rs`, `tests/vla_e2e.rs`; fixture from
 `scripts/gen_smolvla_fixture.py`). Linear weights are Q8_0 by default (`--f32` keeps the
-exact reference path; `--steps N` runs fewer flow-matching steps): ~0.9 s per chunk on
-an M4 CPU, 1.8 s with `--f32`. `sapient serve lerobot/smolvla_base` keeps the policy
+exact reference path; `--steps N` runs fewer flow-matching steps). `--precision
+fast|balanced|exact` picks how much runs 8-bit: 0.66 / 1.0 / 1.7 s per chunk on an M4
+CPU, 3.7 / 5.9 / 11.9 s on a Raspberry Pi 5. `sapient serve lerobot/smolvla_base` keeps the policy
 loaded behind `POST /v1/actions` (`handle_actions` in `server.rs`, its own LRU cache).
 `SAPIENT_VLA_TIMING=1` prints the denoising split (linear / attention / other).
 

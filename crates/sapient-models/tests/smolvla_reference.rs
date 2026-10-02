@@ -220,6 +220,7 @@ fn smolvla_quantized_action_error() {
         vision,
         vlm,
         expert,
+        fast_math: false,
     };
     let configs = [
         ("f32", SmolVlaQuant::NONE),
@@ -227,7 +228,8 @@ fn smolvla_quantized_action_error() {
         ("vlm", q(false, true, false)),
         ("expert", q(false, false, true)),
         ("vision+vlm", q(true, true, false)),
-        ("all", SmolVlaQuant::ALL),
+        ("all", q(true, true, true)),
+        ("all+fast", SmolVlaQuant::ALL),
     ];
     for (name, quant) in configs {
         let weights = sapient_io::load_safetensors(&dir.join("model.safetensors")).unwrap();
@@ -297,5 +299,164 @@ fn smolvla_quantized_action_error() {
                 );
             }
         }
+    }
+}
+
+/// Quantization error over SEVERAL observations instead of one.
+///
+/// The f32 engine reproduces LeRobot to 4e-6 (the test above), so it serves as
+/// the reference here: for each observation (different image, instruction,
+/// state and start noise) the Q8_0 engines' action chunks are compared with the
+/// f32 engine's. One observation is a noisy sample of this error — a 2e-7
+/// change in the vision tower moved the single-observation RMS by 50%.
+#[test]
+#[ignore = "needs the lerobot/smolvla_base checkpoint: set SAPIENT_SMOLVLA_DIR"]
+fn smolvla_quantized_error_over_observations() {
+    let dir = PathBuf::from(std::env::var("SAPIENT_SMOLVLA_DIR").expect("set SAPIENT_SMOLVLA_DIR"));
+    let load = |quant| {
+        let weights = sapient_io::load_safetensors(&dir.join("model.safetensors")).unwrap();
+        SmolVla::from_weights_quant(SmolVlaConfig::default(), weights, quant).unwrap()
+    };
+    let f = fixture();
+    let base_lang: Vec<u32> = fx(&f, "input.lang_tokens")
+        .iter()
+        .zip(&fx(&f, "input.lang_mask"))
+        .filter(|(_, m)| **m > 0.5)
+        .map(|(t, _)| *t as u32)
+        .collect();
+
+    // Deterministic pseudo-random stream (SplitMix64; "normal" = a sum of 12
+    // uniforms — the exact distribution does not matter here).
+    let mut seed = 0x5EEDu64;
+    let mut uniform = move || {
+        seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 40) as f32 / (1u64 << 24) as f32
+    };
+    let mut normal = move || (0..12).map(|_| uniform()).sum::<f32>() - 6.0;
+
+    const N: usize = 8;
+    let size = 512usize;
+    struct Obs {
+        pixels: Vec<f32>,
+        lang: Vec<u32>,
+        state: Vec<f32>,
+        noise: Vec<f32>,
+    }
+    let observations: Vec<Obs> = (0..N)
+        .map(|o| {
+            // Image: the fixture frame, dimmed, with a moved, recoloured block.
+            let mut pixels = test_image(size);
+            let (bx, by) = (40 + 53 * o % 300, 30 + 71 * o % 300);
+            let rgb = [
+                (o * 37 % 256) as f32,
+                (o * 91 % 256) as f32,
+                (255 - o * 29 % 256) as f32,
+            ];
+            for (c, colour) in rgb.iter().enumerate() {
+                for y in 0..size {
+                    for x in 0..size {
+                        let p = &mut pixels[c * size * size + y * size + x];
+                        if (by..by + 120).contains(&y) && (bx..bx + 150).contains(&x) {
+                            *p = colour / 255.0 * 2.0 - 1.0;
+                        } else {
+                            *p = (*p * (0.6 + 0.05 * o as f32)).clamp(-1.0, 1.0);
+                        }
+                    }
+                }
+            }
+            // Instruction: a rotation / truncation of the fixture's tokens
+            // (always ending with the newline token).
+            let body = &base_lang[..base_lang.len() - 1];
+            let mut lang: Vec<u32> = body.iter().cycle().skip(o).take(4 + o).copied().collect();
+            lang.push(*base_lang.last().unwrap());
+            let mut state = vec![0.0f32; 32];
+            for v in state.iter_mut().take(6) {
+                *v = normal() * 0.7;
+            }
+            let noise: Vec<f32> = (0..50 * 32).map(|_| normal()).collect();
+            Obs {
+                pixels,
+                lang,
+                state,
+                noise,
+            }
+        })
+        .collect();
+
+    let run = |model: &SmolVla, o: &Obs| {
+        let embs = model.embed_prefix(&[&o.pixels], &o.lang, &o.state).unwrap();
+        let cache = model.prefix_cache(&embs).unwrap();
+        model.sample_actions(&cache, &o.noise).unwrap()
+    };
+    let reference: Vec<Vec<f32>> = {
+        let model = load(SmolVlaQuant::NONE);
+        observations.iter().map(|o| run(&model, o)).collect()
+    };
+    let ref_rms = (reference
+        .iter()
+        .flatten()
+        .map(|v| (*v as f64).powi(2))
+        .sum::<f64>()
+        / (N * 1600) as f64)
+        .sqrt();
+    println!("{N} observations · reference action RMS {ref_rms:.3}");
+
+    // Mirror check for scripts/smolvla_bf16_yardstick.py (same observations).
+    println!(
+        "first reference action row of observation 0: {:?}",
+        reference[0][..6]
+            .iter()
+            .map(|v| (v * 1e4).round() / 1e4)
+            .collect::<Vec<_>>()
+    );
+
+    let q = |vision, vlm, expert, fast_math| SmolVlaQuant {
+        vision,
+        vlm,
+        expert,
+        fast_math,
+    };
+    for (name, quant) in [
+        ("vision", q(true, false, false, false)),
+        ("vlm", q(false, true, false, false)),
+        ("expert", q(false, false, true, false)),
+        ("vision + expert", q(true, false, true, false)),
+        ("all Q8_0", q(true, true, true, false)),
+        ("all Q8_0 + fast math", SmolVlaQuant::ALL),
+        ("fast math only (f32)", q(false, false, false, true)),
+    ] {
+        let model = load(quant);
+        let (mut worst, mut sq, mut per_obs) = (0.0f32, 0.0f64, Vec::new());
+        for (o, want) in observations.iter().zip(&reference) {
+            let got = run(&model, o);
+            let (max, _) = err(&got, want);
+            let s: f64 = got
+                .iter()
+                .zip(want)
+                .map(|(a, w)| ((a - w) as f64).powi(2))
+                .sum();
+            worst = worst.max(max);
+            sq += s;
+            per_obs.push((s / 1600.0).sqrt());
+        }
+        let rms = (sq / (N * 1600) as f64).sqrt();
+        let per: Vec<String> = per_obs.iter().map(|r| format!("{r:.1e}")).collect();
+        println!(
+            "{name:22} max_err {worst:.3e}  rms {rms:.3e}  per-observation rms [{}]",
+            per.join(" ")
+        );
+        // Regression guards at 2× the values measured on 2026-10-02.
+        let (max_tol, rms_tol) = match name {
+            "expert" => (0.13, 9e-3),
+            "fast math only (f32)" => (1e-4, 1e-5),
+            _ => (0.33, 2.7e-2),
+        };
+        assert!(
+            worst <= max_tol && rms <= rms_tol,
+            "{name}: max {worst} rms {rms}"
+        );
     }
 }
