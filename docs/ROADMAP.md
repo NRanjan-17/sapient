@@ -67,7 +67,7 @@
   inputs zero-padded to 736), last prefix layer's unused attention/MLP skipped, cross
   K/V projected once per observation → M4 1.83 s (f32) → **0.93 s** per chunk, action
   error max 0.035 vs LeRobot-bf16's own 0.014; `POST /v1/actions` in `sapient serve`.
-  **Kernel + Pi (2026-10-03):** bit-identical 4×4-tile Q8_0 GEMM (1.5–2.4× on M4 at 10
+  **Kernel + Pi (2026-10-02):** bit-identical 4×4-tile Q8_0 GEMM (1.3–1.7× on M4 at 10
   threads), `fast | balanced | exact` precision modes, error measured over eight
   observations against LeRobot's bf16 yardstick → M4 **0.66 s**, **Pi 5 3.65 s** per
   chunk (`fast`). Open VLA rungs: the Pi tower's attention (f32 GEMM-bound), jitter,

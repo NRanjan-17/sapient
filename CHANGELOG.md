@@ -44,7 +44,7 @@ section below as the GitHub release body.
 
 ### ⚡ Faster 8-bit matrix multiply
 
-- The Q8_0 GEMM used by vision towers, prefill and SmolVLA is 1.5–2.4× faster on an
+- The Q8_0 GEMM used by vision towers, prefill and SmolVLA is 1.3–1.7× faster on an
   Apple M4 at 10 threads, with bit-identical results (4×4 register tile, in-place
   output, finer task split). `sapient see` image encode: about 555 → 397 ms on the M4.
   On a Raspberry Pi 5 a SmolVLA chunk went from 5.15 s to 3.65 s.

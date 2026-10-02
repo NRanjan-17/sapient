@@ -943,7 +943,7 @@ Notes:
   coexist. Served (`POST /v1/actions`, policy resident): 0.89 s per call, HTTP overhead
   about 2 ms; two cameras 1.46 s.
 
-### Correction and update (2026-10-03): error over eight observations, new kernel, Pi 5
+### Correction and update (2026-10-02, later the same day): error over eight observations, new kernel, Pi 5
 
 **The single-observation error above understated the quantization error about 3×.**
 Measured again over eight varied observations (different image, instruction, state and
@@ -972,11 +972,17 @@ still not a dataset, and none of this measures task success.
 
 | Shape (m × k → n) | Before, 1 thread | After, 1 thread | Before, 10 threads | After, 10 threads |
 |---|---|---|---|---|
-| tower q/k/v 1024 × 768 → 768 | 82 GMAC/s | 99 | 220 | 528–546 |
-| tower fc1 1024 × 768 → 3072 | 84 | 126 | 362 | 667–681 |
-| tower fc2 1024 × 3072 → 768 | 81 | 112 | 365 | 563–573 |
-| expert gate/up 50 × 736 → 2048 | 91 | 108 | 255 | 375–398 |
-| prefix MLP 78 × 960 → 2560 | 98 | 116 | 367 | 465–517 |
+| tower q/k/v 1024 × 768 → 768 | 85 GMAC/s | 110 | 396 | 592 |
+| tower fc1 1024 × 768 → 3072 | 89 | 123 | 416 | 705 |
+| tower fc2 1024 × 3072 → 768 | 80 | 110 | 387 | 582 |
+| expert gate/up 50 × 736 → 2048 | 91 | 107 | 312 | 426 |
+| expert down 50 × 2048 → 720 | 86 | 99 | 321 | 411 |
+| prefix MLP 78 × 960 → 2560 | 99 | 116 | 419 | 578 |
+
+Best call within at least 0.3 s per shape, before and after measured back to back on
+the same machine (1.3–1.7× at 10 threads, 1.15–1.4× on one). Shorter runs read low on
+Apple Silicon until the core ramps up: a first pass with 7 calls per shape showed the
+old kernel at 220–365 GMAC/s and overstated the gain as 1.5–2.4×.
 
 Three changes: a 4 weight-row × 4 activation-row tile (`dot_q8_0_4rows_sdot_x4` — the
 old 1 × 4 tile issued 12 vector loads per 8 `sdot`s), output written in place instead of

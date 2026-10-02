@@ -45,8 +45,11 @@ fn q8_gemm_throughput() {
             .map(|i| ((i * 40503 % 1009) as f32 / 1009.0 - 0.5) * 4.0)
             .collect();
         let xt = Tensor::from_f32(&x, vec![m, k]).unwrap();
+        // Run for at least 0.3 s: on Apple Silicon a core that has not ramped
+        // up reads ~2× low, and the small shapes take under a millisecond.
         let mut best = f64::MAX;
-        for _ in 0..7 {
+        let begun = std::time::Instant::now();
+        while begun.elapsed().as_secs_f64() < 0.3 {
             let t = std::time::Instant::now();
             let y = matmul_nt(&xt, &w).unwrap();
             best = best.min(t.elapsed().as_secs_f64());
