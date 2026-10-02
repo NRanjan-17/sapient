@@ -74,6 +74,9 @@ pub struct SiglipVision {
     /// Vectorized polynomial `exp` in the attention softmax and the GELU
     /// instead of libm calls — see [`with_fast_math`](Self::with_fast_math).
     fast_math: bool,
+    /// int8 attention (`dense_attention_int8`) — see
+    /// [`with_int8_attention`](Self::with_int8_attention).
+    int8_attention: bool,
 }
 
 impl SiglipVision {
@@ -96,7 +99,18 @@ impl SiglipVision {
             head_dim,
             prefix: prefix.to_string(),
             fast_math: false,
+            int8_attention: false,
         })
+    }
+
+    /// Run the tower's attention in int8 (Q·Kᵀ and P·V on the `sdot` GEMM tile,
+    /// per-32 scales, K mean-centred first) instead of f32 SGEMM. Approximate —
+    /// for paths gated on numeric error only (SmolVLA `fast`). Needs aarch64
+    /// `dotprod`, `head_dim % 32 == 0` and a patch count divisible by 32;
+    /// otherwise the f32 path runs.
+    pub fn with_int8_attention(mut self, on: bool) -> Self {
+        self.int8_attention = on;
+        self
     }
 
     /// Use the vectorized polynomial `exp` (softmax) and GELU. ~2e-7 relative
@@ -137,6 +151,26 @@ impl SiglipVision {
         self.backend
             .linear_3d_bias(x, &w, b.as_ref())
             .map_err(|e| anyhow!("{e}"))
+    }
+
+    fn attention(&self, q: &Tensor, k: &Tensor, v: &Tensor) -> Result<Tensor> {
+        #[cfg(target_arch = "aarch64")]
+        if self.int8_attention
+            && self.head_dim % 32 == 0
+            && q.shape().dims()[2] % 32 == 0
+            && std::arch::is_aarch64_feature_detected!("dotprod")
+        {
+            let seq = q.shape().dims()[2];
+            return dense_attention_int8(
+                q,
+                k,
+                v,
+                self.cfg.heads,
+                self.head_dim,
+                attn_tile_rows(seq),
+            );
+        }
+        dense_full_attention(q, k, v, self.cfg.heads, self.head_dim, self.fast_math)
     }
 
     /// Preprocessed pixels `[3, S, S]` → raw tower features
@@ -226,8 +260,7 @@ impl SiglipVision {
                 self.head_dim,
             )?;
             lap(1, &mut mark);
-            let attn =
-                dense_full_attention(&q, &k, &v, self.cfg.heads, self.head_dim, self.fast_math)?;
+            let attn = self.attention(&q, &k, &v)?;
             let attn = merge_heads(&attn)?;
             lap(2, &mut mark);
             let attn = self.linear(&attn, &format!("{p}.self_attn.out_proj"))?;
@@ -412,6 +445,200 @@ fn dense_full_attention_tiled(
     Tensor::from_f32(&out, Shape::new([1, n_heads, seq, head_dim])).map_err(|e| anyhow!("{e}"))
 }
 
+/// One head's K and Vᵀ as Q8_0 rows plus their block-major f32 scales — the
+/// "weights" of the two int8 attention GEMMs.
+#[cfg(target_arch = "aarch64")]
+struct Int8HeadKv {
+    k: Vec<u8>,
+    k_scales_t: Vec<f32>,
+    vt: Vec<u8>,
+    vt_scales_t: Vec<f32>,
+}
+
+/// Quantize `rows` rows of `width` values (`src[r·width..]`) to Q8_0, also
+/// returning the scales widened to f32, block-major (`[bi · rows + r]`).
+#[cfg(target_arch = "aarch64")]
+fn q8_0_rows(src: impl Fn(usize, &mut [f32]), rows: usize, width: usize) -> (Vec<u8>, Vec<f32>) {
+    use sapient_backends_cpu::kernels::quant::quantize_q8_0_block;
+    let bpr = width / 32;
+    let mut bytes = Vec::with_capacity(rows * bpr * 34);
+    let mut scales_t = vec![0.0f32; bpr * rows];
+    let mut buf = vec![0.0f32; width];
+    for r in 0..rows {
+        src(r, &mut buf);
+        for (b, blk) in buf.chunks_exact(32).enumerate() {
+            let qb = quantize_q8_0_block(blk);
+            scales_t[b * rows + r] = half::f16::from_le_bytes([qb[0], qb[1]]).to_f32();
+            bytes.extend_from_slice(&qb);
+        }
+    }
+    (bytes, scales_t)
+}
+
+/// Quantize `rows` activation rows to int8 with per-32 scales, returning the
+/// scales block-major as the GEMM tile wants them.
+#[cfg(target_arch = "aarch64")]
+fn i8_rows(x: &[f32], rows: usize, width: usize) -> (Vec<i8>, Vec<f32>) {
+    use sapient_backends_cpu::kernels::quant::quantize_row_to_i8_blocks_into;
+    let bpr = width / 32;
+    let mut q = vec![0i8; rows * width];
+    let mut sc = vec![0.0f32; rows * bpr];
+    for r in 0..rows {
+        quantize_row_to_i8_blocks_into(
+            &x[r * width..(r + 1) * width],
+            &mut q[r * width..(r + 1) * width],
+            &mut sc[r * bpr..(r + 1) * bpr],
+        );
+    }
+    let mut sc_t = vec![0.0f32; bpr * rows];
+    for r in 0..rows {
+        for b in 0..bpr {
+            sc_t[b * rows + r] = sc[r * bpr + b];
+        }
+    }
+    (q, sc_t)
+}
+
+/// int8 version of [`dense_full_attention`] (non-causal, same layout).
+///
+/// Both products run on the W8A8 `sdot` tile with per-32-element scales, the
+/// format the Q8_0 linears already use:
+/// * `S = Q·Kᵀ`: K is first **mean-centred over the sequence** per channel.
+///   That adds the same constant `q·mean` to every score of a query row, which
+///   softmax ignores — but it removes K's shared offset so the int8 grid is
+///   spent on what distinguishes the keys (the SageAttention observation).
+/// * `O = P·V`: the unnormalized `exp(s − max)` (largest value 1) is quantized
+///   per 32 keys, multiplied with Vᵀ quantized per 32 keys, and the output row
+///   divided by the row sum at the end.
+///
+/// The softmax itself stays f32 (polynomial `exp`). Approximate: SmolVLA gates
+/// it on action error; `sapient see` never uses it.
+#[cfg(target_arch = "aarch64")]
+fn dense_attention_int8(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    n_heads: usize,
+    head_dim: usize,
+    tile: usize,
+) -> Result<Tensor> {
+    use rayon::prelude::*;
+    use sapient_backends_cpu::kernels::elementwise::exp_approx_slice;
+    use sapient_backends_cpu::kernels::quant::q8_0_gemm_nt_serial;
+    let seq = q.shape().dims()[2];
+    let hd = head_dim;
+    let qv = q.to_f32_cow();
+    let kv = k.to_f32_cow();
+    let vv = v.to_f32_cow();
+    let scale = 1.0 / (hd as f32).sqrt();
+    let head_len = seq * hd;
+    // Multiple of 4 so tiles map onto the 4×4 GEMM tile.
+    let tile = (tile.max(4) / 4) * 4;
+
+    let heads: Vec<Int8HeadKv> = (0..n_heads)
+        .into_par_iter()
+        .map(|h| {
+            let kh = &kv[h * head_len..(h + 1) * head_len];
+            let vh = &vv[h * head_len..(h + 1) * head_len];
+            let mut mean = vec![0.0f32; hd];
+            for row in kh.chunks_exact(hd) {
+                for (m, x) in mean.iter_mut().zip(row) {
+                    *m += x;
+                }
+            }
+            for m in mean.iter_mut() {
+                *m /= seq as f32;
+            }
+            let (k, k_scales_t) = q8_0_rows(
+                |j, buf| {
+                    for ((o, x), m) in buf.iter_mut().zip(&kh[j * hd..(j + 1) * hd]).zip(&mean) {
+                        *o = x - m;
+                    }
+                },
+                seq,
+                hd,
+            );
+            let (vt, vt_scales_t) = q8_0_rows(
+                |d, buf| {
+                    for (j, o) in buf.iter_mut().enumerate() {
+                        *o = vh[j * hd + d];
+                    }
+                },
+                hd,
+                seq,
+            );
+            Int8HeadKv {
+                k,
+                k_scales_t,
+                vt,
+                vt_scales_t,
+            }
+        })
+        .collect();
+
+    let mut out = vec![0.0f32; n_heads * head_len];
+    out.par_chunks_mut(head_len)
+        .enumerate()
+        .for_each(|(h, out_h)| {
+            let hk = &heads[h];
+            let qh = &qv[h * head_len..(h + 1) * head_len];
+            out_h
+                .par_chunks_mut(tile * hd)
+                .enumerate()
+                .for_each(|(ti, out_t)| {
+                    let r0 = ti * tile;
+                    let rows = out_t.len() / hd;
+                    let (qi8, qs_t) = i8_rows(&qh[r0 * hd..(r0 + rows) * hd], rows, hd);
+                    let mut scores = vec![0.0f32; rows * seq];
+                    // SAFETY: dotprod checked by the caller; sizes by construction.
+                    unsafe {
+                        q8_0_gemm_nt_serial(
+                            &qi8,
+                            &qs_t,
+                            rows,
+                            hd,
+                            &hk.k,
+                            &hk.k_scales_t,
+                            seq,
+                            &mut scores,
+                            seq,
+                        )
+                    };
+                    let mut sums = vec![0.0f32; rows];
+                    for (row, sum) in scores.chunks_exact_mut(seq).zip(sums.iter_mut()) {
+                        let mx = row.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                        for x in row.iter_mut() {
+                            *x = (*x - mx) * scale;
+                        }
+                        exp_approx_slice(row);
+                        *sum = row.iter().sum();
+                    }
+                    let (pi8, ps_t) = i8_rows(&scores, rows, seq);
+                    // SAFETY: as above.
+                    unsafe {
+                        q8_0_gemm_nt_serial(
+                            &pi8,
+                            &ps_t,
+                            rows,
+                            seq,
+                            &hk.vt,
+                            &hk.vt_scales_t,
+                            hd,
+                            out_t,
+                            hd,
+                        )
+                    };
+                    for (o, sum) in out_t.chunks_exact_mut(hd).zip(&sums) {
+                        let inv = 1.0 / sum;
+                        for x in o.iter_mut() {
+                            *x *= inv;
+                        }
+                    }
+                });
+        });
+    Tensor::from_f32(&out, Shape::new([1, n_heads, seq, head_dim])).map_err(|e| anyhow!("{e}"))
+}
+
 #[cfg(test)]
 mod tests {
     /// The pixel-shuffle ordering must be exactly transformers'
@@ -419,6 +646,42 @@ mod tests {
     /// dw (inner) of in[hj·s+dh][wj·s+dw], channels innermost.
     /// Tiling the tower attention over query rows must not change a single
     /// bit, and the result must match a naive reference.
+    /// int8 attention tracks the f32 kernel on realistic-scale data (keys with
+    /// a large shared offset — what the mean-centring is for).
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn int8_attention_tracks_f32() {
+        use super::{Shape, Tensor};
+        if !std::arch::is_aarch64_feature_detected!("dotprod") {
+            return;
+        }
+        let (heads, seq, hd) = (2usize, 96usize, 64usize);
+        let gen = |salt: usize, offset: f32| -> Vec<f32> {
+            (0..heads * seq * hd)
+                .map(|i| {
+                    (((i * 2654435761usize + salt * 97) % 2003) as f32 / 2003.0 - 0.5) * 4.0
+                        + offset * ((i % hd) as f32 / hd as f32)
+                })
+                .collect()
+        };
+        let t = |d: Vec<f32>| Tensor::from_f32(&d, Shape::new([1, heads, seq, hd])).unwrap();
+        let (q, k, v) = (t(gen(1, 0.0)), t(gen(2, 20.0)), t(gen(3, 0.0)));
+        let exact = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, seq, false)
+            .unwrap()
+            .to_f32_vec();
+        for tile in [4usize, 30, 96] {
+            let got = super::dense_attention_int8(&q, &k, &v, heads, hd, tile)
+                .unwrap()
+                .to_f32_vec();
+            let (mut e, mut m) = (0.0f32, 0.0f32);
+            for (a, b) in got.iter().zip(&exact) {
+                e = e.max((a - b).abs());
+                m = m.max(b.abs());
+            }
+            assert!(e < 0.03 * m, "tile {tile}: max err {e} (max |ref| {m})");
+        }
+    }
+
     #[test]
     fn tiled_attention_is_bit_identical_and_matches_naive() {
         use super::{Shape, Tensor};

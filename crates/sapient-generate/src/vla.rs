@@ -65,6 +65,7 @@ impl VlaPrecision {
                 vlm: false,
                 expert: true,
                 fast_math: true,
+                int8_attention: false,
             },
             Self::Exact => SmolVlaQuant::NONE,
         }

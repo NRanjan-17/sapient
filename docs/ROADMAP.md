@@ -70,7 +70,9 @@
   **Kernel + Pi (2026-10-02):** bit-identical 4×4-tile Q8_0 GEMM (1.3–1.7× on M4 at 10
   threads), `fast | balanced | exact` precision modes, error measured over eight
   observations against LeRobot's bf16 yardstick → M4 **0.66 s**, **Pi 5 3.65 s** per
-  chunk (`fast`). Open VLA rungs: the Pi tower's attention (f32 GEMM-bound), jitter,
+  chunk (`fast`); then int8 vision attention for `fast` (Pi attention 0.86 → 0.47 s,
+  chunk **3.29 s**; M4 0.61 s; no measurable action-error increase). Open VLA rungs:
+  the expert's per-step overhead, fused softmax + quantization in attention, jitter,
   asynchronous chunk execution, a real dataset and task success, a fine-tuned checkpoint
   with real normalization statistics, catalog entry. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five

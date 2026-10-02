@@ -172,7 +172,7 @@ curl localhost:11435/v1/actions -H 'Content-Type: application/json' -d '{
 
 | `--precision` | Apple M4 | Raspberry Pi 5 | Action error (RMS) |
 |---|---|---|---|
-| `fast` (default, all 8-bit) | 0.66 s | 3.7 s | 0.012 |
+| `fast` (default, all 8-bit) | 0.6 s | 3.3 s | 0.009–0.013 |
 | `balanced` (8-bit action expert only) | 1.0 s | 5.9 s | 0.004 |
 | `exact` (f32) | 1.7 s | 11.9 s | matches LeRobot to 4e-6 |
 

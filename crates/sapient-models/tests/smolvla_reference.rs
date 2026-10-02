@@ -221,6 +221,7 @@ fn smolvla_quantized_action_error() {
         vlm,
         expert,
         fast_math: false,
+        int8_attention: false,
     };
     let configs = [
         ("f32", SmolVlaQuant::NONE),
@@ -418,6 +419,7 @@ fn smolvla_quantized_error_over_observations() {
         vlm,
         expert,
         fast_math,
+        int8_attention: false,
     };
     for (name, quant) in [
         ("vision", q(true, false, false, false)),
@@ -425,7 +427,8 @@ fn smolvla_quantized_error_over_observations() {
         ("expert", q(false, false, true, false)),
         ("vision + expert", q(true, false, true, false)),
         ("all Q8_0", q(true, true, true, false)),
-        ("all Q8_0 + fast math", SmolVlaQuant::ALL),
+        ("all Q8_0 + fast math", q(true, true, true, true)),
+        ("fast (+ int8 attention)", SmolVlaQuant::ALL),
         ("fast math only (f32)", q(false, false, false, true)),
     ] {
         let model = load(quant);

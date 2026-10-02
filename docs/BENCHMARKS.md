@@ -1013,6 +1013,39 @@ the M4. Pi 5: 16 GB board, 47 °C idle, 71 °C after the runs, passive cooling s
 recorded. `sapient see` image encode on the M4 (same kernel, exact math): 555 → about
 397 ms, replies unchanged.
 
+### int8 vision attention for SmolVLA `fast` (2026-10-02)
+
+The vision tower's attention now runs in int8 on the `fast` path: Q·Kᵀ and P·V on the
+same `sdot` 4×4 tile as the Q8_0 linears, per-32 scales, K mean-centred over the
+sequence first (exact under softmax), softmax kept in f32. `sapient see` and the
+`balanced` / `exact` modes keep the f32 attention.
+
+Acceptance rule, fixed before measuring: the `fast` action error over the eight
+observations may rise by at most 20% (RMS ≤ 1.56e-2).
+
+| Over eight observations | Max error | RMS error |
+|---|---|---|
+| `fast` before (f32 attention) | 1.6e-1 | 1.3e-2 |
+| `fast` with int8 attention | 8.5e-2 | 8.7e-3 |
+| LeRobot bf16 default (yardstick) | 1.1e-1 | 4.6e-3 |
+
+The lower error is within the per-observation spread (4e-3 to 2.2e-2) and is not
+claimed as an improvement — only that int8 attention adds no measurable error.
+
+Per chunk, one camera, `fast`, A/B in the same session (`SAPIENT_VLA_INT8_ATTN=0|1`):
+
+| | Attention | Vision | Total |
+|---|---|---|---|
+| Apple M4, f32 attention | 113–117 ms | 338–355 ms | 640–657 ms |
+| Apple M4, int8 attention | 68–69 ms | 292–298 ms | **591–614 ms** |
+| Pi 5, f32 attention | 848–869 ms | 2.28–2.34 s | 3.65–3.71 s |
+| Pi 5, int8 attention | 471–474 ms | 1.92–1.93 s | **3.29–3.30 s** |
+
+Pi 5 two cameras: 6.25 → 5.45 s. Attention tile size on the Pi (int8): 64 KB 450 ms,
+128 KB 457, 256 KB (default) 472, 512 KB 588 — within noise of the default except 512.
+The int8 attention runs at ~41 GMAC/s on the Pi against ~74 for the tower's linears; the
+rest is the f32 softmax and quantizing the probabilities.
+
 ---
 
 ## Binary & deployment
