@@ -630,6 +630,10 @@ struct ActionsRequest {
     /// precision of a model is a separate resident policy.
     #[serde(default)]
     precision: Option<String>,
+    /// Explicit flow-matching start noise, `chunk × 32` rows (overrides
+    /// `seed`) — for exact comparison against another implementation.
+    #[serde(default)]
+    noise: Option<Vec<Vec<f32>>>,
 }
 
 /// `POST /v1/audio/speech` body (OpenAI shape).
@@ -1396,13 +1400,17 @@ async fn handle_actions(
     let policy = vla.payload.clone();
     let robot_state = req.state.unwrap_or_else(|| vec![0.0; policy.state_dim()]);
     let (task, seed, steps) = (req.task, req.seed.unwrap_or(0), req.steps);
+    let noise: Option<Vec<f32>> = req.noise.map(|rows| rows.into_iter().flatten().collect());
     let run = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let pixels = frames
             .iter()
             .map(|b| policy.preprocess_image_bytes(b))
             .collect::<Result<Vec<_>>>()?;
-        policy.predict_steps(&pixels, &task, &robot_state, seed, steps)
+        match &noise {
+            Some(n) => policy.predict_noise_steps(&pixels, &task, &robot_state, n, steps),
+            None => policy.predict_steps(&pixels, &task, &robot_state, seed, steps),
+        }
     })
     .await;
 

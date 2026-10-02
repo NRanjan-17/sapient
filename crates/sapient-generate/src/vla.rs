@@ -34,8 +34,34 @@ use sapient_tokenizers::{SapientTokenizer, TokenizerOptions};
 /// The default SmolVLA checkpoint.
 pub const SMOLVLA_REPO: &str = "lerobot/smolvla_base";
 
-const NORMALIZER_FILE: &str = "policy_preprocessor_step_5_normalizer_processor.safetensors";
-const UNNORMALIZER_FILE: &str = "policy_postprocessor_step_0_unnormalizer_processor.safetensors";
+/// LeRobot processor pipeline descriptions. Each names the safetensors file its
+/// (un)normalizer step stores statistics in — the step index in that name
+/// varies between checkpoints (`…step_0_unnormalizer…` vs `…step_1_…`).
+const PROCESSOR_CONFIGS: [&str; 2] = ["policy_preprocessor.json", "policy_postprocessor.json"];
+/// Fallback names when a checkpoint has no processor configs.
+const DEFAULT_STATS_FILES: [&str; 2] = [
+    "policy_preprocessor_step_5_normalizer_processor.safetensors",
+    "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+];
+
+/// The `state_file` of every `normalizer_processor` / `unnormalizer_processor`
+/// step in a LeRobot processor config.
+fn stats_files_in(processor_json: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(processor_json) else {
+        return Vec::new();
+    };
+    v["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|s| {
+            s["registry_name"]
+                .as_str()
+                .is_some_and(|n| n.ends_with("normalizer_processor"))
+        })
+        .filter_map(|s| s["state_file"].as_str().map(str::to_string))
+        .collect()
+}
 const NORM_EPS: f32 = 1e-8;
 
 /// How much of the policy runs on 8-bit (Q8_0) weights. Error figures are the
@@ -174,11 +200,26 @@ impl VlaPipeline {
             .download_files(&vlm_repo, &["tokenizer.json"])
             .await
             .with_context(|| format!("downloading the tokenizer from {vlm_repo}"))?;
-        // Normalization statistics are optional.
-        let stats: Vec<PathBuf> = client
-            .download_files(repo, &[NORMALIZER_FILE, UNNORMALIZER_FILE])
-            .await
-            .unwrap_or_default();
+        // Normalization statistics are optional. Find their file names in the
+        // processor configs; fall back to the common names.
+        let mut names: Vec<String> = Vec::new();
+        for cfg_name in PROCESSOR_CONFIGS {
+            if let Ok(p) = client.download_files(repo, &[cfg_name]).await {
+                if let Ok(text) = std::fs::read_to_string(&p[0]) {
+                    names.extend(stats_files_in(&text));
+                }
+            }
+        }
+        if names.is_empty() {
+            names = DEFAULT_STATS_FILES.iter().map(|s| s.to_string()).collect();
+        }
+        names.dedup();
+        let mut stats: Vec<PathBuf> = Vec::new();
+        for name in &names {
+            if let Ok(p) = client.download_files(repo, &[name.as_str()]).await {
+                stats.extend(p);
+            }
+        }
         Self::from_files(&files[0], &files[1], &tok[0], &stats, quant)
     }
 
@@ -329,6 +370,29 @@ impl VlaPipeline {
         let mc = self.model.config();
         let noise = gaussian_noise(mc.chunk * mc.max_action_dim, seed);
         self.run(images, task, state, &noise, steps.unwrap_or(mc.num_steps))
+    }
+
+    /// [`predict_steps`](Self::predict_steps) with explicit start noise
+    /// `[chunk, max_action_dim]` instead of a seed — for comparing against a
+    /// reference implementation given the same noise.
+    pub fn predict_noise_steps(
+        &self,
+        images: &[Vec<f32>],
+        task: &str,
+        state: &[f32],
+        noise: &[f32],
+        steps: Option<usize>,
+    ) -> Result<ActionChunk> {
+        let mc = self.model.config();
+        if noise.len() != mc.chunk * mc.max_action_dim {
+            bail!(
+                "noise must be {} × {} values, got {}",
+                mc.chunk,
+                mc.max_action_dim,
+                noise.len()
+            );
+        }
+        self.run(images, task, state, noise, steps.unwrap_or(mc.num_steps))
     }
 
     /// [`predict`](Self::predict) with explicit start noise
@@ -487,6 +551,19 @@ fn gaussian_noise(n: usize, seed: u64) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stats_file_names_come_from_processor_configs() {
+        let json = r#"{"name":"policy_postprocessor","steps":[
+            {"registry_name":"unnormalizer_processor","config":{},
+             "state_file":"policy_postprocessor_step_1_unnormalizer_processor.safetensors"},
+            {"registry_name":"device_processor","config":{}}]}"#;
+        assert_eq!(
+            stats_files_in(json),
+            vec!["policy_postprocessor_step_1_unnormalizer_processor.safetensors"]
+        );
+        assert!(stats_files_in("not json").is_empty());
+    }
 
     #[test]
     fn resize_same_size_is_a_range_map() {
