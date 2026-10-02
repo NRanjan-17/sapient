@@ -21,8 +21,10 @@ size, thermal behaviour, and the measured numbers.
 curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
-sapient models          # catalog
-sapient chat qwen2.5-0.5b-q4          # first chat (downloads ~400 MB)
+# catalog
+sapient models
+# first chat (downloads ~400 MB)
+sapient chat qwen2.5-0.5b-q4
 ```
 
 No Python, no Docker, no swap tuning needed for the models recommended below —

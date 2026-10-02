@@ -13,7 +13,8 @@ same API, no server process. See
 
 ```bash
 # 1. Start the engine (any machine on your network)
-sapient serve            # listens on 127.0.0.1:11435
+# listens on 127.0.0.1:11435
+sapient serve
 
 # 2. In your app
 npm install @openhorizon-labs/sapient
@@ -76,7 +77,8 @@ see the safe-testing guide in `docs/MOBILE.md`.
 
 ```bash
 npm install
-npm test     # builds with tsc, then runs node --test (SSE units + a mock-serve integration suite)
+# builds with tsc, then runs node --test (SSE units + a mock-serve integration suite)
+npm test
 ```
 
 Zero runtime dependencies; Node ≥ 18.

@@ -14,7 +14,7 @@
 // — exactly the (fixed) CPU dequantize_row_q6_K scale indexing: offsets +0/+2/+4/+6
 // per 128-half with the l==16 split; getting this wrong is the historical
 // token-salad bug, so change nothing here without the random-bit reference tests.
-// One workgroup per output element; 256 lanes stride over the K/16 scale-groups,
+// ROWS output elements per workgroup, LANES threads each (was: one 256-lane workgroup per element); stride over the K/16 scale-groups,
 // accumulating Σx·(q−32) per group and applying d·sc once. f32 accumulation.
 
 struct P { m: u32, k: u32, n: u32, _pad: u32 };
@@ -24,7 +24,14 @@ struct P { m: u32, k: u32, n: u32, _pad: u32 };
 @group(0) @binding(2) var<storage, read_write> out: array<f32>;
 @group(0) @binding(3) var<uniform>             p:   P;
 
-const WG: u32 = 256u;
+// Decode GEMV layout: ROWS output elements per workgroup, LANES threads per
+// element. The old layout gave every output element a 256-thread workgroup:
+// for a 1536-wide row most threads idled and every element paid an 8-step
+// reduction. Swept on an Apple M4 GPU (Qwen2.5-1.5B Q4_K_M decode, ms/token):
+// 256 lanes 57.6 · 64 lanes 36.5 · 32 lanes 34.8 · 16 lanes 27.4 · 8 lanes 27.2.
+// Untuned on Vulkan/DX12 GPUs; ROWS must match GEMV_ROWS in resident.rs.
+const LANES: u32 = 16u;
+const ROWS: u32 = 16u; // LANES * ROWS = 256 = workgroup size
 var<workgroup> partial: array<f32, 256>;
 
 fn byte_of(word: u32, b: u32) -> u32 { return (word >> (b * 8u)) & 0xFFu; }
@@ -33,14 +40,18 @@ fn byte_of(word: u32, b: u32) -> u32 { return (word >> (b * 8u)) & 0xFFu; }
 fn cs_main(@builtin(workgroup_id) wg: vec3<u32>,
            @builtin(local_invocation_id) lid: vec3<u32>,
            @builtin(num_workgroups) nwg: vec3<u32>) {
-    let idx = wg.x + wg.y * nwg.x;
-    if (idx >= p.m * p.n) { return; }
-    let rm = idx / p.n;
-    let rn = idx % p.n;
+    let lane = lid.x % LANES;
+    let idx = (wg.x + wg.y * nwg.x) * ROWS + lid.x / LANES;
+    // No early return: every thread must reach the barriers below. Lanes past
+    // the end compute a clamped (valid) element and skip the write.
+    let in_range = idx < p.m * p.n;
+    let idc = min(idx, p.m * p.n - 1u);
+    let rm = idc / p.n;
+    let rn = idc % p.n;
     let nblocks = p.k / 256u;
     let row_base = rn * nblocks * 53u;
     let xb = rm * p.k;
-    let tid = lid.x;
+    let tid = lane;
 
     var acc = 0.0;
     var sg = tid;                 // 16-weight scale-group index within the row
@@ -80,17 +91,17 @@ fn cs_main(@builtin(workgroup_id) wg: vec3<u32>,
             sum_x = sum_x + dot(xv, vec4<f32>(1.0));
         }
         acc = acc + d * sc * (255.0 * sum_q - 32.0 * sum_x);
-        sg = sg + WG;
+        sg = sg + LANES;
     }
-    partial[tid] = acc;
+    partial[lid.x] = acc;
     workgroupBarrier();
 
-    var st = WG / 2u;
+    var s = LANES / 2u;
     loop {
-        if (st == 0u) { break; }
-        if (tid < st) { partial[tid] = partial[tid] + partial[tid + st]; }
+        if (s == 0u) { break; }
+        if (lane < s) { partial[lid.x] = partial[lid.x] + partial[lid.x + s]; }
         workgroupBarrier();
-        st = st / 2u;
+        s = s / 2u;
     }
-    if (tid == 0u) { out[idx] = partial[0]; }
+    if (in_range && lane == 0u) { out[idx] = partial[lid.x]; }
 }

@@ -307,8 +307,12 @@ The real generation math: how to run a Phi or Llama-style model layer by layer.
     GGUF loads fully quantized; Q4_0/Q5_K expand to f32), the KV cache stays on the
     GPU as packed f16 (half the bytes → ctx 8192 instead of 4096), prompts prefill
     in 128-token batched chunks, and each decode token runs with all its kernels
-    batched into one queue submission; only logits read back. Llama-family — see
-    the wgpu invariants in `CLAUDE.md`.
+    batched into one queue submission and one compute pass; only logits read back.
+    Llama-family — see the wgpu invariants in `CLAUDE.md`. `SAPIENT_WGPU_TIMING=1`
+    prints per-token CPU recording vs GPU time; `python3 scripts/bench_wgpu.py`
+    compares cpu / wgpu / metal on the local machine (backends a binary can't run
+    are skipped with the reason). On Apple Silicon wgpu is still slower than the CPU
+    for 4-bit models.
   - `forward/whisper.rs` — the **Whisper speech-to-text engine** (`WhisperForward`,
     wrapped in `AudioEngine`). An encoder turns the mel spectrogram into an "audio
     understanding," then a decoder writes out the words one token at a time, *listening

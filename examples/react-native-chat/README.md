@@ -17,14 +17,17 @@ transport, nothing else.
 ```bash
 # 1. Build the native RN library once (repo root; rebuilds after FFI changes)
 cd sdks/react-native && npm install && \
-  IPHONEOS_DEPLOYMENT_TARGET=14.0 npm run ubrn:ios   # + ubrn:android for Android
+  # + ubrn:android for Android
+  IPHONEOS_DEPLOYMENT_TARGET=14.0 npm run ubrn:ios
 
 # 2. This app — native code means a DEVELOPMENT BUILD (Expo Go can't run it)
 cd examples/react-native-chat
 npm install
-npx expo prebuild -p ios          # generates ios/ (CNG — not committed)
+# generates ios/ (CNG — not committed)
+npx expo prebuild -p ios
 cd ios && pod install && cd ..
-npx expo run:ios                  # or open ios/*.xcworkspace in Xcode
+# or open ios/*.xcworkspace in Xcode
+npx expo run:ios
 ```
 
 Server mode only (no native build needed — works in Expo Go):

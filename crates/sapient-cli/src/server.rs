@@ -1564,7 +1564,8 @@ async fn handle_chat_completions(
 
     let model = match state.get_or_load(&model_id).await {
         Ok(m) => m,
-        Err(e) => return server_err(e),
+        // `{:#}` keeps the cause chain ("failed to load model" alone hides why).
+        Err(e) => return server_err(format!("{e:#}")),
     };
 
     // Admission control: wait for an inference slot (bounds concurrency).
@@ -1795,7 +1796,7 @@ async fn handle_chat_completions(
                 })
                 .into_response()
             }
-            Err(e) => server_err(e),
+            Err(e) => server_err(format!("{e:#}")),
         }
     }
 }
@@ -1945,7 +1946,8 @@ async fn handle_completions(
 
     let model = match state.get_or_load(&model_id).await {
         Ok(m) => m,
-        Err(e) => return server_err(e),
+        // `{:#}` keeps the cause chain ("failed to load model" alone hides why).
+        Err(e) => return server_err(format!("{e:#}")),
     };
 
     let permit = match state.inference_sem.clone().acquire_owned().await {
@@ -2025,7 +2027,7 @@ async fn handle_completions(
                 })
                 .into_response()
             }
-            Err(e) => server_err(e),
+            Err(e) => server_err(format!("{e:#}")),
         }
     }
 }
@@ -2119,6 +2121,13 @@ pub async fn serve_llm(
     speculative: bool,
     draft_model: Option<&str>,
 ) -> Result<()> {
+    // Refuse an explicit backend this binary/machine cannot run up front, with
+    // the reason — otherwise every request fails with a generic 500.
+    let backend_kind = crate::parse_generation_backend(backend)?;
+    if let Some(reason) = sapient_generate::backend_unavailable_reason(backend_kind) {
+        anyhow::bail!("cannot serve with --backend {backend}: {reason}");
+    }
+
     // Refuse to start if another `sapient serve` is already running (single
     // instance per machine). Held for the server's lifetime; removed on exit.
     let _serve_lock = ServeLock::acquire()?;

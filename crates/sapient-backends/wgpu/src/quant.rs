@@ -20,6 +20,7 @@ use wgpu::util::DeviceExt;
 
 use crate::context::{WgpuContext, WgpuError};
 use crate::resident::GpuBuffer;
+use crate::resident::GEMV_ROWS;
 
 /// Weights per Q8_0 block.
 const BLOCK: usize = 32;
@@ -181,7 +182,7 @@ impl WgpuContext {
                 include_str!("shaders/matmul_nt_q8_0.wgsl"),
                 &[&x.buf, &w.qs, &w.scales, &out.buf],
                 &params,
-                (m * n) as u32,
+                (m * n).div_ceil(GEMV_ROWS) as u32,
             );
         }
         out
@@ -262,7 +263,7 @@ impl WgpuContext {
                 include_str!("shaders/matmul_nt_q4_k.wgsl"),
                 &[&x.buf, &w.qb, &out.buf],
                 &params,
-                (m * n) as u32,
+                (m * n).div_ceil(GEMV_ROWS) as u32,
             );
         }
         out
@@ -392,7 +393,7 @@ impl WgpuContext {
                 include_str!("shaders/matmul_nt_q6_k.wgsl"),
                 &[&x.buf, &w.qb, &out.buf],
                 &params,
-                (m * n) as u32,
+                (m * n).div_ceil(GEMV_ROWS) as u32,
             );
         }
         out
