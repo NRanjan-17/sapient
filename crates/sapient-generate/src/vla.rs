@@ -38,6 +38,59 @@ const NORMALIZER_FILE: &str = "policy_preprocessor_step_5_normalizer_processor.s
 const UNNORMALIZER_FILE: &str = "policy_postprocessor_step_0_unnormalizer_processor.safetensors";
 const NORM_EPS: f32 = 1e-8;
 
+/// How much of the policy runs on 8-bit (Q8_0) weights. Error figures are the
+/// RMS difference of the action chunk from the f32 result over eight varied
+/// observations (`smolvla_quantized_error_over_observations`); LeRobot's own
+/// default precision (bf16) scores 4.6e-3 on the same observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VlaPrecision {
+    /// Everything 8-bit — fastest and smallest. RMS error ~1.2e-2, about 2.5×
+    /// LeRobot's own bf16 deviation.
+    #[default]
+    Fast,
+    /// Only the action expert 8-bit (it runs 10× per chunk, so it is most of
+    /// the saving); vision and VLM stay f32. RMS error 4.2e-3 — the same as
+    /// LeRobot's own bf16 deviation.
+    Balanced,
+    /// Everything f32: reproduces the f32 LeRobot reference to ~4e-6.
+    Exact,
+}
+
+impl VlaPrecision {
+    pub fn quant(self) -> SmolVlaQuant {
+        match self {
+            Self::Fast => SmolVlaQuant::ALL,
+            Self::Balanced => SmolVlaQuant {
+                vision: false,
+                vlm: false,
+                expert: true,
+                fast_math: true,
+            },
+            Self::Exact => SmolVlaQuant::NONE,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fast => "fast",
+            Self::Balanced => "balanced",
+            Self::Exact => "exact",
+        }
+    }
+}
+
+impl std::str::FromStr for VlaPrecision {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "fast" | "q8" => Ok(Self::Fast),
+            "balanced" => Ok(Self::Balanced),
+            "exact" | "f32" => Ok(Self::Exact),
+            other => bail!("unknown precision '{other}' (expected fast, balanced or exact)"),
+        }
+    }
+}
+
 /// Wall-clock split of one [`VlaPipeline::predict`] call.
 #[derive(Debug, Clone, Default)]
 pub struct VlaTiming {
@@ -97,11 +150,9 @@ impl VlaPipeline {
     /// and load it. The tokenizer comes from the VLM the policy was built on
     /// (`vlm_model_name` in its config).
     ///
-    /// Linear weights are stored as Q8_0 ([`SmolVlaQuant::ALL`]): about 1.8×
-    /// faster than f32 and a fraction of the memory, at an action error of the
-    /// same order as LeRobot's own default bf16 precision (see
-    /// `docs/BENCHMARKS.md`). Use [`from_pretrained_with`](Self::from_pretrained_with)
-    /// and [`SmolVlaQuant::NONE`] for the exact f32 path.
+    /// Uses [`VlaPrecision::Fast`] (everything Q8_0); see [`VlaPrecision`] for
+    /// the measured accuracy of each choice and
+    /// [`from_pretrained_with`](Self::from_pretrained_with) to pick another.
     pub async fn from_pretrained(repo: &str) -> Result<Self> {
         Self::from_pretrained_with(repo, SmolVlaQuant::ALL).await
     }

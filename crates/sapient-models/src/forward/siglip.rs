@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use sapient_backends_cpu::kernels::elementwise::gelu;
+use sapient_backends_cpu::kernels::elementwise::{exp_approx_slice, gelu, gelu_fast};
 use sapient_core::{Shape, Tensor};
 
 use super::backend::{LlmBackend, LlmBackendDispatch, LlmBackendKind};
@@ -71,6 +71,9 @@ pub struct SiglipVision {
     /// Checkpoint key prefix up to (excluding) `.embeddings…` — SmolVLM uses
     /// `model.vision_model`, Gemma3/MedGemma use `vision_tower.vision_model`.
     prefix: String,
+    /// Vectorized polynomial `exp` in the attention softmax and the GELU
+    /// instead of libm calls — see [`with_fast_math`](Self::with_fast_math).
+    fast_math: bool,
 }
 
 impl SiglipVision {
@@ -92,7 +95,18 @@ impl SiglipVision {
             backend,
             head_dim,
             prefix: prefix.to_string(),
+            fast_math: false,
         })
+    }
+
+    /// Use the vectorized polynomial `exp` (softmax) and GELU. ~2e-7 relative
+    /// per `exp`, so the output is no longer bit-identical to the default path.
+    /// Off for `sapient see` (greedy decoding can flip on a near-tie); SmolVLA
+    /// turns it on with its Q8_0 vision path, where the action error is
+    /// measured. On a Pi 5 these two were ~1.1 s of a 2.4 s image encode.
+    pub fn with_fast_math(mut self, on: bool) -> Self {
+        self.fast_math = on;
+        self
     }
 
     pub fn config(&self) -> &SiglipConfig {
@@ -212,7 +226,8 @@ impl SiglipVision {
                 self.head_dim,
             )?;
             lap(1, &mut mark);
-            let attn = dense_full_attention(&q, &k, &v, self.cfg.heads, self.head_dim)?;
+            let attn =
+                dense_full_attention(&q, &k, &v, self.cfg.heads, self.head_dim, self.fast_math)?;
             let attn = merge_heads(&attn)?;
             lap(2, &mut mark);
             let attn = self.linear(&attn, &format!("{p}.self_attn.out_proj"))?;
@@ -223,7 +238,13 @@ impl SiglipVision {
             lap(0, &mut mark);
             let up = self.linear(&normed, &format!("{p}.mlp.fc1"))?;
             lap(4, &mut mark);
-            let up = gelu(&up).map_err(|e| anyhow!("{e}"))?; // gelu_pytorch_tanh
+            // gelu_pytorch_tanh
+            let up = if self.fast_math {
+                gelu_fast(&up)
+            } else {
+                gelu(&up)
+            }
+            .map_err(|e| anyhow!("{e}"))?;
             lap(5, &mut mark);
             let down = self.linear(&up, &format!("{p}.mlp.fc2"))?;
             x = self.backend.add(&x, &down).map_err(|e| anyhow!("{e}"))?;
@@ -308,9 +329,10 @@ fn dense_full_attention(
     v: &Tensor,
     n_heads: usize,
     head_dim: usize,
+    fast_exp: bool,
 ) -> Result<Tensor> {
     let seq = q.shape().dims()[2];
-    dense_full_attention_tiled(q, k, v, n_heads, head_dim, attn_tile_rows(seq))
+    dense_full_attention_tiled(q, k, v, n_heads, head_dim, attn_tile_rows(seq), fast_exp)
 }
 
 /// [`dense_full_attention`] with an explicit tile height (query rows per tile).
@@ -321,6 +343,7 @@ fn dense_full_attention_tiled(
     n_heads: usize,
     head_dim: usize,
     tile: usize,
+    fast_exp: bool,
 ) -> Result<Tensor> {
     use rayon::prelude::*;
     use sapient_backends_cpu::kernels::matmul::sgemm_serial;
@@ -351,11 +374,11 @@ fn dense_full_attention_tiled(
                     let mut scores = vec![0.0f32; rows * seq];
                     sgemm_serial(rows, head_dim, seq, q_t, kh, 1, head_dim, &mut scores);
                     // Row-wise softmax.
-                    // MEASURED, NOT ADOPTED (2026-10-02): a 4-wide NEON polynomial
-                    // exp (~2e-7 rel. error) cut attention 765 → 546 ms single-thread
-                    // on M4 but is not bit-identical and flipped a greedy near-tie
-                    // in the reply. Kept scalar until a quality gate exists to
-                    // accept that class of change.
+                    // The scalar libm `exp` is the default: a polynomial exp
+                    // (~2e-7 rel. error) is not bit-identical and flipped a
+                    // greedy near-tie in a `sapient see` reply (2026-10-02).
+                    // `fast_exp` opts in for paths gated on numeric error
+                    // (SmolVLA: action error vs the reference).
                     for row in scores.chunks_exact_mut(seq) {
                         let mut mx = f32::NEG_INFINITY;
                         for x in row.iter_mut() {
@@ -365,9 +388,17 @@ fn dense_full_attention_tiled(
                             }
                         }
                         let mut sum = 0.0f32;
-                        for x in row.iter_mut() {
-                            *x = (*x - mx).exp();
-                            sum += *x;
+                        if fast_exp {
+                            for x in row.iter_mut() {
+                                *x -= mx;
+                            }
+                            exp_approx_slice(row);
+                            sum = row.iter().sum();
+                        } else {
+                            for x in row.iter_mut() {
+                                *x = (*x - mx).exp();
+                                sum += *x;
+                            }
                         }
                         let inv = 1.0 / sum;
                         for x in row.iter_mut() {
@@ -401,11 +432,11 @@ mod tests {
         let t = |d: &[f32]| Tensor::from_f32(d, Shape::new([1, heads, seq, hd])).unwrap();
         let (q, k, v) = (t(&qd), t(&kd), t(&vd));
 
-        let whole = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, seq)
+        let whole = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, seq, false)
             .unwrap()
             .to_f32_vec();
         for tile in [1usize, 5, 16, 36] {
-            let tiled = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, tile)
+            let tiled = super::dense_full_attention_tiled(&q, &k, &v, heads, hd, tile, false)
                 .unwrap()
                 .to_f32_vec();
             for (i, (a, b)) in tiled.iter().zip(&whole).enumerate() {

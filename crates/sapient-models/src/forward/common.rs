@@ -583,11 +583,22 @@ pub fn add_bias_last_dim(y: &Tensor, bias: &Tensor) -> Result<Tensor> {
     if b.len() != n {
         anyhow::bail!("bias length {} does not match last dim {n}", b.len());
     }
+    // Row-wise (no per-element modulo), in parallel for large outputs — a
+    // 1024×3072 vision-tower linear spent as long here as in its GEMM. Same
+    // additions in the same order per element → bit-identical.
     let mut data = y.as_f32_slice().to_vec();
-    for (i, v) in data.iter_mut().enumerate() {
-        *v += b[i % n];
+    let add_row = |row: &mut [f32]| {
+        for (v, bi) in row.iter_mut().zip(b) {
+            *v += bi;
+        }
+    };
+    if data.len() >= 1 << 16 {
+        use rayon::prelude::*;
+        data.par_chunks_mut(n).for_each(add_row);
+    } else {
+        data.chunks_mut(n).for_each(add_row);
     }
-    map_err(Tensor::from_f32(&data, Shape::new(dims)))
+    map_err(Tensor::from_f32_vec(data, Shape::new(dims)))
 }
 
 pub fn rms_norm(x: &Tensor, weight: &Tensor, eps: f32) -> Result<Tensor> {

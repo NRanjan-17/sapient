@@ -657,6 +657,23 @@ fn q8_gemm_panel_bytes() -> usize {
     })
 }
 
+/// Weight rows per parallel task of the blocked Q8_0 GEMM: a multiple of 4
+/// (the 4×4 tile), sized for `SAPIENT_Q8_TASKS` (default 8) tasks per thread so
+/// work stealing can even out fast and slow cores.
+#[cfg(target_arch = "aarch64")]
+fn q8_gemm_wchunk(n: usize) -> usize {
+    static TASKS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let per_thread = *TASKS.get_or_init(|| {
+        std::env::var("SAPIENT_Q8_TASKS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(8)
+    });
+    let tasks = rayon::current_num_threads().max(1) * per_thread;
+    (n.div_ceil(tasks).div_ceil(4) * 4).max(4)
+}
+
 fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Result<Tensor> {
     if k % QUANT_BLOCK_SIZE != 0 {
         return Err(SapientError::internal(
@@ -712,45 +729,93 @@ fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
                 }
             }
 
-            let mut out_t = vec![0.0f32; n * m]; // [n, m]
-            let wchunk = gemv_chunk(n);
-            out_t
-                .par_chunks_mut(wchunk * m)
-                .enumerate()
-                .for_each(|(ci, oc)| {
+            // Tasks own disjoint ranges of weight rows = disjoint COLUMNS of the
+            // row-major [m, n] output, written in place through a shared
+            // pointer (a column range is not a contiguous slice). This replaces
+            // a [n, m] scratch buffer plus a transpose pass over the output.
+            struct OutPtr(*mut f32);
+            // SAFETY: every task writes only columns j0..j0+rows of each row.
+            unsafe impl Sync for OutPtr {}
+            let out_ptr = OutPtr(out.as_mut_ptr());
+            let wchunk = q8_gemm_wchunk(n);
+            (0..n.div_ceil(wchunk)).into_par_iter().for_each(|ci| {
+                {
+                    let out_ptr = &out_ptr;
                     let j0 = ci * wchunk;
-                    let rows = oc.len() / m;
-                    // This chunk's weight scales, widened once.
+                    let rows = wchunk.min(n - j0);
+                    // out[i][j0 + jl]
+                    let put = |jl: usize, i: usize, v: f32| {
+                        debug_assert!(jl < rows && i < m);
+                        // SAFETY: in bounds (i < m, j0 + jl < n) and this
+                        // task is the only writer of columns j0..j0+rows.
+                        unsafe { *out_ptr.0.add(i * n + j0 + jl) = v };
+                    };
+                    // This chunk's weight scales, widened once — row-major
+                    // for the single-weight-row kernels, block-major for the
+                    // 4×4 tile (four rows' scales for a block = one load).
                     let mut w_scales = vec![0.0f32; rows * bpr];
                     for (jl, ws) in w_scales.chunks_exact_mut(bpr).enumerate() {
                         let j = j0 + jl;
                         quant::q8_0_row_scales(&w_blocks[j * row_bytes..(j + 1) * row_bytes], ws);
                     }
+                    let mut w_scales_t = vec![0.0f32; bpr * rows];
+                    for (jl, ws) in w_scales.chunks_exact(bpr).enumerate() {
+                        for (bi, &v) in ws.iter().enumerate() {
+                            w_scales_t[bi * rows + jl] = v;
+                        }
+                    }
                     let xi = |i: usize| &x_i8[i * k..(i + 1) * k];
                     let xs = |i: usize| &x_scales[i * bpr..(i + 1) * bpr];
+                    let wrow = |jl: usize| {
+                        let j = j0 + jl;
+                        &w_blocks[j * row_bytes..(j + 1) * row_bytes]
+                    };
                     // Activation PANELS: sweeping all m rows per weight row
                     // streams m·k bytes (3 MB for a 1024-patch tower) per row —
                     // fine in an M-series L2, DRAM-bound on a Pi 5 (measured:
                     // the tower's linears matched the bandwidth roofline). A
                     // panel is sized to stay cache-resident while this chunk's
                     // weight rows (≈60–160 KB) pass over it. Each output is the
-                    // same kernel call as before → bit-identical.
+                    // same per-lane arithmetic as before → bit-identical.
                     let panel = (q8_gemm_panel_bytes() / k).max(4) / 4 * 4;
+                    let rows4 = rows / 4 * 4;
                     for p0 in (0..m).step_by(panel) {
                         let p1 = (p0 + panel).min(m);
                         let q1 = p0 + (p1 - p0) / 4 * 4;
-                        for (jl, orow) in oc.chunks_mut(m).enumerate() {
-                            let j = j0 + jl;
-                            let wrow = &w_blocks[j * row_bytes..(j + 1) * row_bytes];
+                        // 4 weight rows × 4 activation rows per tile
+                        // (see dot_q8_0_4rows_sdot_x4).
+                        for jl in (0..rows4).step_by(4) {
+                            let wr = [wrow(jl), wrow(jl + 1), wrow(jl + 2), wrow(jl + 3)];
+                            for i in (p0..q1).step_by(4) {
+                                // SAFETY: dotprod verified above; slices sized
+                                // by construction (rows4 ≤ rows, i + 4 ≤ m).
+                                let r = unsafe {
+                                    quant::dot_q8_0_4rows_sdot_x4(
+                                        wr,
+                                        &w_scales_t,
+                                        rows,
+                                        jl,
+                                        [xi(i), xi(i + 1), xi(i + 2), xi(i + 3)],
+                                        &x_scales_t,
+                                        m,
+                                        i,
+                                    )
+                                };
+                                for (ri, rr) in r.iter().enumerate() {
+                                    for (l, &v) in rr.iter().enumerate() {
+                                        put(jl + l, i + ri, v);
+                                    }
+                                }
+                            }
+                        }
+                        // Leftover weight rows (< 4): one row × 4 activation rows.
+                        for jl in rows4..rows {
                             let ws = &w_scales[jl * bpr..(jl + 1) * bpr];
-                            // Four activation rows per pass through the weight
-                            // row (see dot_q8_0_row_sdot_x4), then the < 4
-                            // remainder of the last panel.
                             for i in (p0..q1).step_by(4) {
                                 // SAFETY: dotprod verified above.
                                 let r = unsafe {
                                     quant::dot_q8_0_row_sdot_x4(
-                                        wrow,
+                                        wrow(jl),
                                         ws,
                                         [xi(i), xi(i + 1), xi(i + 2), xi(i + 3)],
                                         &x_scales_t,
@@ -758,19 +823,21 @@ fn matmul_nt_q8_0(x: &Tensor, w: &Tensor, m: usize, k: usize, n: usize) -> Resul
                                         i,
                                     )
                                 };
-                                orow[i..i + 4].copy_from_slice(&r);
+                                for (ri, &v) in r.iter().enumerate() {
+                                    put(jl, i + ri, v);
+                                }
                             }
-                            for (i, slot) in orow.iter_mut().enumerate().take(p1).skip(q1) {
+                        }
+                        // Leftover activation rows (< 4) of the last panel.
+                        for jl in 0..rows {
+                            for i in q1..p1 {
                                 // SAFETY: dotprod verified above.
-                                *slot = unsafe { quant::dot_q8_0_row_sdot(wrow, xi(i), xs(i)) };
+                                put(jl, i, unsafe {
+                                    quant::dot_q8_0_row_sdot(wrow(jl), xi(i), xs(i))
+                                });
                             }
                         }
                     }
-                });
-            // Transpose [n, m] → [m, n] (parallel over output rows).
-            out.par_chunks_mut(n).enumerate().for_each(|(i, orow)| {
-                for (j, o) in orow.iter_mut().enumerate() {
-                    *o = out_t[j * m + i];
                 }
             });
             return Tensor::from_f32_vec(out, Shape::new([m, n]));
@@ -1483,7 +1550,9 @@ mod tests {
     /// non-multiple-of-4 row count.
     #[test]
     fn matmul_nt_q8_0_blocked_matches_per_row() {
-        let n_out = 5;
+        // 4×4 tiles + leftover weight rows (n_out % 4 = 3, and uneven tasks)
+        // + leftover activation rows.
+        let n_out = 47;
         let k = 2048; // panel = 16 rows → m = 131 spans 9 panels, remainder 3
         let m = 131;
         let w_f32: Vec<f32> = (0..n_out * k)

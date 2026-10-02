@@ -156,7 +156,7 @@ sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (
 # SmolVLA: camera image(s) + instruction + robot state -> the next 50 actions
 sapient act camera.jpg --task "pick up the red cube" --state "0.1,0.2,-0.3,0.4,0,0.5"
 sapient act top.jpg wrist.jpg --task "pick up the red cube" --json   # two cameras, JSON output
-sapient act camera.jpg --task "pick up the red cube" --f32           # exact reference precision
+sapient act camera.jpg --task "pick up the red cube" --precision balanced   # or: exact
 
 # Keep the policy loaded and call it over HTTP
 sapient serve lerobot/smolvla_base
@@ -167,11 +167,19 @@ curl localhost:11435/v1/actions -H 'Content-Type: application/json' -d '{
 }'
 ```
 
-`sapient act` runs [SmolVLA](https://huggingface.co/lerobot/smolvla_base) (450M). On an
-Apple M4 CPU with one camera a 50-action chunk takes about 0.9 s (8-bit weights, the
-default) or 1.8 s with `--f32`. The f32 path matches LeRobot's reference actions to 4e-6;
-the 8-bit default moves them by at most 0.035 in normalized units, against 0.014 for
-LeRobot's own default bf16 precision (one test observation — see `docs/BENCHMARKS.md`).
+`sapient act` runs [SmolVLA](https://huggingface.co/lerobot/smolvla_base) (450M), one
+50-action chunk per call. Three precisions (CPU, one camera):
+
+| `--precision` | Apple M4 | Raspberry Pi 5 | Action error (RMS) |
+|---|---|---|---|
+| `fast` (default, all 8-bit) | 0.66 s | 3.7 s | 0.012 |
+| `balanced` (8-bit action expert only) | 1.0 s | 5.9 s | 0.004 |
+| `exact` (f32) | 1.7 s | 11.9 s | matches LeRobot to 4e-6 |
+
+Error is the difference from the f32 result over eight synthetic observations, in
+normalized action units (typical action magnitude 0.36). LeRobot's own default
+precision (bf16) scores 0.005 on the same observations. Task success has not been
+measured. Details: `docs/BENCHMARKS.md`.
 The base checkpoint is meant to be fine-tuned for a robot; it prints actions in the
 model's normalized space.
 

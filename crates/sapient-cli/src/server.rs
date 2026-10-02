@@ -36,7 +36,8 @@ use tracing::info;
 
 use sapient_generate::{
     GenerationConfig, KokoroTts, LoadOptions, Pipeline, SamplingStrategy, SpeculativePipeline,
-    TranscribeOptions, TranscribePipeline, Tts, VlaPipeline, VlmPipeline, DEFAULT_KOKORO_VOICE,
+    TranscribeOptions, TranscribePipeline, Tts, VlaPipeline, VlaPrecision, VlmPipeline,
+    DEFAULT_KOKORO_VOICE,
 };
 use sapient_tokenizers::{ChatMessage, ToolCall};
 
@@ -389,24 +390,38 @@ impl ServeState {
 
     /// Like [`get_or_load_audio`](Self::get_or_load_audio), but for SmolVLA
     /// policies backing `POST /v1/actions`.
-    async fn get_or_load_vla(&self, model_id: &str) -> Result<Arc<CachedModel<Arc<VlaPipeline>>>> {
-        if let Some(m) = self.vla_cache.lock().await.touch(model_id) {
+    async fn get_or_load_vla(
+        &self,
+        model_id: &str,
+        precision: VlaPrecision,
+    ) -> Result<Arc<CachedModel<Arc<VlaPipeline>>>> {
+        // One cache entry per (model, precision).
+        let key = match precision {
+            VlaPrecision::Fast => model_id.to_string(),
+            other => format!("{model_id}#{}", other.as_str()),
+        };
+        if let Some(m) = self.vla_cache.lock().await.touch(&key) {
             return Ok(m);
         }
         let _load = self.load_lock.lock().await;
-        if let Some(m) = self.vla_cache.lock().await.touch(model_id) {
+        if let Some(m) = self.vla_cache.lock().await.touch(&key) {
             return Ok(m);
         }
 
-        info!("loading VLA policy '{model_id}'…");
-        let vla = VlaPipeline::from_pretrained(model_id)
+        info!("loading VLA policy '{key}'…");
+        let vla = VlaPipeline::from_pretrained_with(model_id, precision.quant())
             .await
             .with_context(|| format!("failed to load VLA policy '{model_id}'"))?;
         let entry = Arc::new(CachedModel {
-            model_id: model_id.to_string(),
+            model_id: key,
             payload: Arc::new(vla),
-            // ~0.5 GB resident with Q8_0 linears.
-            bytes: 512 * 1024 * 1024,
+            // Resident weights: ~0.5 GB all-Q8_0, up to ~1.8 GB all-f32.
+            bytes: match precision {
+                VlaPrecision::Fast => 512,
+                VlaPrecision::Balanced => 1400,
+                VlaPrecision::Exact => 1800,
+            } * 1024
+                * 1024,
         });
         let evicted = self.vla_cache.lock().await.insert(entry.clone());
         for id in &evicted {
@@ -611,6 +626,10 @@ struct ActionsRequest {
     /// Flow-matching steps (default: the checkpoint's). Fewer is faster and coarser.
     #[serde(default)]
     steps: Option<usize>,
+    /// `fast` (default), `balanced` or `exact` — see `VlaPrecision`. Each
+    /// precision of a model is a separate resident policy.
+    #[serde(default)]
+    precision: Option<String>,
 }
 
 /// `POST /v1/audio/speech` body (OpenAI shape).
@@ -1361,7 +1380,11 @@ async fn handle_actions(
         }
     }
 
-    let vla = match state.get_or_load_vla(&model_id).await {
+    let precision: VlaPrecision = match req.precision.as_deref().unwrap_or("fast").parse() {
+        Ok(p) => p,
+        Err(e) => return model_err(format!("{e:#}")),
+    };
+    let vla = match state.get_or_load_vla(&model_id, precision).await {
         Ok(v) => v,
         Err(e) => return server_err(format!("{e:#}")),
     };
@@ -1394,6 +1417,7 @@ async fn handle_actions(
                 "steps": chunk.steps,
                 "dim": chunk.dim,
                 "robot_units": chunk.robot_units,
+                "precision": precision.as_str(),
                 "timing_ms": {
                     "vision": t.vision_ms,
                     "prefix": t.prefix_ms,
@@ -2167,7 +2191,7 @@ pub async fn serve_llm(
         // A VLA policy: load it into the VLA cache so the first
         // /v1/actions call is already warm.
         let spinner = crate::ui::spinner(format!("loading {model_id}…"));
-        state.get_or_load_vla(model_id).await?;
+        state.get_or_load_vla(model_id, VlaPrecision::Fast).await?;
         spinner.finish_and_clear();
         print_banner(port, backend, Some((model_id, "SmolVLA", " · Q8_0")));
     } else if let Some(model_id) = preload_model {
@@ -2294,6 +2318,9 @@ mod tests {
         assert_eq!(req.task, "pick up the cube");
         assert_eq!(req.images.len(), 1);
         assert!(req.model.is_none() && req.state.is_none() && req.steps.is_none());
+        assert!(req.precision.is_none());
+        assert!("balanced".parse::<VlaPrecision>().is_ok());
+        assert!("turbo".parse::<VlaPrecision>().is_err());
 
         let req: ActionsRequest = serde_json::from_str(
             r#"{"model":"lerobot/smolvla_base","task":"t","images":[],"state":[0.5,-1],"seed":7,"steps":5}"#,

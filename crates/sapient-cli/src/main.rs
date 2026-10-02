@@ -215,7 +215,13 @@ enum Commands {
         #[arg(long)]
         json: bool,
 
-        /// Keep every weight f32 (exact reference path; ~1.8× slower, more RAM).
+        /// `fast` (all 8-bit weights, default), `balanced` (only the action
+        /// expert 8-bit — accuracy on par with LeRobot's bf16 default) or
+        /// `exact` (all f32, the reference path).
+        #[arg(long, default_value = "fast")]
+        precision: String,
+
+        /// Shorthand for `--precision exact`.
         #[arg(long)]
         f32: bool,
 
@@ -622,9 +628,15 @@ async fn dispatch(cli: Cli) -> Result<()> {
             model,
             seed,
             json,
+            precision,
             f32,
             steps,
         } => {
+            let precision: sapient_generate::VlaPrecision = if f32 {
+                sapient_generate::VlaPrecision::Exact
+            } else {
+                precision.parse()?
+            };
             act_command(
                 &images,
                 &task,
@@ -632,7 +644,7 @@ async fn dispatch(cli: Cli) -> Result<()> {
                 &model,
                 seed,
                 json,
-                f32,
+                precision,
                 steps,
             )
             .await
@@ -1818,7 +1830,7 @@ async fn act_command(
     model: &str,
     seed: u64,
     json: bool,
-    f32_weights: bool,
+    precision: sapient_generate::VlaPrecision,
     steps: Option<usize>,
 ) -> Result<()> {
     for image in images {
@@ -1827,13 +1839,11 @@ async fn act_command(
         }
     }
     let loading = ui::spinner(format!("loading {model}…"));
-    let quant = if f32_weights {
-        sapient_generate::SmolVlaQuant::NONE
-    } else {
-        sapient_generate::SmolVlaQuant::ALL
-    };
-    let vla = sapient_generate::VlaPipeline::from_pretrained_with(model, quant).await?;
-    ui::spinner_success(loading, format!("{model} ready"));
+    let vla = sapient_generate::VlaPipeline::from_pretrained_with(model, precision.quant()).await?;
+    ui::spinner_success(
+        loading,
+        format!("{model} ready ({} precision)", precision.as_str()),
+    );
 
     let state: Vec<f32> = match state {
         Some(s) => s
