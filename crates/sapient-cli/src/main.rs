@@ -214,6 +214,15 @@ enum Commands {
         /// Print the whole action chunk and timings as JSON.
         #[arg(long)]
         json: bool,
+
+        /// Keep every weight f32 (exact reference path; ~1.8× slower, more RAM).
+        #[arg(long)]
+        f32: bool,
+
+        /// Flow-matching steps (default: the checkpoint's, 10). Fewer is faster
+        /// and coarser.
+        #[arg(long)]
+        steps: Option<usize>,
     },
 
     /// Synthesise speech from text with a TTS model (text-to-speech).
@@ -613,7 +622,21 @@ async fn dispatch(cli: Cli) -> Result<()> {
             model,
             seed,
             json,
-        } => act_command(&images, &task, state.as_deref(), &model, seed, json).await,
+            f32,
+            steps,
+        } => {
+            act_command(
+                &images,
+                &task,
+                state.as_deref(),
+                &model,
+                seed,
+                json,
+                f32,
+                steps,
+            )
+            .await
+        }
         Commands::Speak {
             model,
             text,
@@ -1787,6 +1810,7 @@ async fn see_command(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn act_command(
     images: &[PathBuf],
     task: &str,
@@ -1794,6 +1818,8 @@ async fn act_command(
     model: &str,
     seed: u64,
     json: bool,
+    f32_weights: bool,
+    steps: Option<usize>,
 ) -> Result<()> {
     for image in images {
         if !image.exists() {
@@ -1801,7 +1827,12 @@ async fn act_command(
         }
     }
     let loading = ui::spinner(format!("loading {model}…"));
-    let vla = sapient_generate::VlaPipeline::from_pretrained(model).await?;
+    let quant = if f32_weights {
+        sapient_generate::SmolVlaQuant::NONE
+    } else {
+        sapient_generate::SmolVlaQuant::ALL
+    };
+    let vla = sapient_generate::VlaPipeline::from_pretrained_with(model, quant).await?;
     ui::spinner_success(loading, format!("{model} ready"));
 
     let state: Vec<f32> = match state {
@@ -1821,7 +1852,7 @@ async fn act_command(
             .iter()
             .map(|p| vla.preprocess_image(p))
             .collect::<Result<Vec<_>>>()?;
-        vla.predict(&pixels, &task_owned, &state, seed)
+        vla.predict_steps(&pixels, &task_owned, &state, seed, steps)
     })
     .await??;
     thinking.finish_and_clear();

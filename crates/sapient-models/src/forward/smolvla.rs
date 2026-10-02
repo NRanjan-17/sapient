@@ -41,8 +41,20 @@ use rayon::prelude::*;
 use sapient_backends_cpu::kernels::matmul::{matmul_nt, sgemm_serial};
 use sapient_core::{DType, Shape, Tensor};
 
-use super::common::embed_tokens;
+use super::common::{embed_tokens, quantize_tensor_to_q8_0};
 use super::siglip::{SiglipConfig, SiglipVision};
+
+/// Stage counters (ns) printed by `sample_actions` under `SAPIENT_VLA_TIMING`:
+/// time inside linears and inside attention; the rest is norms, RoPE, copies.
+static T_LINEAR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static T_ATTN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn lap(counter: &std::sync::atomic::AtomicU64, since: std::time::Instant) {
+    counter.fetch_add(
+        since.elapsed().as_nanos() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
 
 const VLM_PREFIX: &str = "model.vlm_with_expert.vlm.";
 const EXPERT_PREFIX: &str = "model.vlm_with_expert.lm_expert.";
@@ -101,6 +113,11 @@ pub struct PrefixCache {
     pub n: usize,
     pub keys: Vec<Vec<f32>>,
     pub values: Vec<Vec<f32>>,
+    /// For each cross-attention expert layer: the VLM K/V already re-projected
+    /// by that layer's `k_proj` / `v_proj`, `[kv_heads, n, head_dim]`. They
+    /// depend only on the prefix, so they are computed once per observation
+    /// instead of once per denoising step. `None` for self-attention layers.
+    cross: Vec<Option<(Vec<f32>, Vec<f32>)>>,
 }
 
 /// A loaded SmolVLA policy.
@@ -108,6 +125,61 @@ pub struct SmolVla {
     cfg: SmolVlaConfig,
     vision: SiglipVision,
     w: HashMap<String, Tensor>,
+}
+
+/// Which parts of the policy store their linear weights as Q8_0 (8-bit blocks,
+/// ~1.06 bytes/weight) instead of f32. Only matrices whose input width is a
+/// multiple of 32 can be Q8_0, so the expert's 720-wide inputs (`q_proj`,
+/// self-attention `k_proj`/`v_proj`, `gate_proj`, `up_proj`) always stay f32.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmolVlaQuant {
+    /// SigLIP tower + connector.
+    pub vision: bool,
+    /// The 16 SmolVLM2 text layers of the prefix pass.
+    pub vlm: bool,
+    /// The action expert (run `num_steps` times per chunk).
+    pub expert: bool,
+}
+
+impl SmolVlaQuant {
+    /// Everything f32 — reproduces the f32 reference.
+    pub const NONE: Self = Self {
+        vision: false,
+        vlm: false,
+        expert: false,
+    };
+    pub const ALL: Self = Self {
+        vision: true,
+        vlm: true,
+        expert: true,
+    };
+}
+
+/// A linear weight as the engine stores it: Q8_0 when asked for, else f32.
+///
+/// Q8_0 rows are whole 32-element blocks, so a matrix whose input width is not
+/// a multiple of 32 (the expert's 720) gets **zero columns appended** up to the
+/// next multiple (736) before quantizing; [`SmolVla::linear`] pads the
+/// activations with zeros to match. The product is unchanged — the extra terms
+/// are `0 · 0`.
+fn prepare(name: &str, t: Tensor, quantize: bool) -> Result<Tensor> {
+    let dims = t.shape().dims().to_vec();
+    if !quantize || dims.len() != 2 || ["norm", "bias", "embed"].iter().any(|s| name.contains(s)) {
+        return to_f32(t);
+    }
+    let (rows, k) = (dims[0], dims[1]);
+    let padded_k = k.div_ceil(32) * 32;
+    if padded_k == k {
+        return Ok(quantize_tensor_to_q8_0(t));
+    }
+    let src = t.to_f32_vec();
+    let mut padded = vec![0.0f32; rows * padded_k];
+    for (dst, row) in padded.chunks_exact_mut(padded_k).zip(src.chunks_exact(k)) {
+        dst[..k].copy_from_slice(row);
+    }
+    let t =
+        Tensor::from_f32_vec(padded, Shape::new([rows, padded_k])).map_err(|e| anyhow!("{e}"))?;
+    Ok(quantize_tensor_to_q8_0(t))
 }
 
 /// Convert a float tensor to F32 (exact for F16/BF16 sources).
@@ -125,26 +197,56 @@ impl SmolVla {
     /// Everything except the token-embedding table is widened to F32 so the
     /// engine reproduces the f32 reference exactly; quantizing the linears is
     /// a later, separately measured step. The unused `lm_head` is dropped.
-    pub fn from_weights(mut cfg: SmolVlaConfig, weights: HashMap<String, Tensor>) -> Result<Self> {
+    pub fn from_weights(cfg: SmolVlaConfig, weights: HashMap<String, Tensor>) -> Result<Self> {
+        Self::from_weights_quant(cfg, weights, SmolVlaQuant::NONE)
+    }
+
+    /// [`from_weights`](Self::from_weights) with some parts stored as Q8_0.
+    /// Smaller and faster, no longer bit-close to the f32 reference — the
+    /// action error of each choice is measured in `tests/smolvla_reference.rs`.
+    pub fn from_weights_quant(
+        mut cfg: SmolVlaConfig,
+        weights: HashMap<String, Tensor>,
+        quant: SmolVlaQuant,
+    ) -> Result<Self> {
+        // Convert / quantize in parallel (quantizing ~400M weights serially
+        // dominated load time); `true` routes a tensor to the vision tower.
+        let prepared: Vec<(bool, String, Tensor)> = weights
+            .into_par_iter()
+            .filter_map(|(name, t)| -> Option<Result<(bool, String, Tensor)>> {
+                if let Some(rest) = name.strip_prefix(VLM_PREFIX) {
+                    if rest.starts_with("lm_head") {
+                        return None;
+                    }
+                    let vision = rest.starts_with("model.vision_model")
+                        || rest.starts_with("model.connector");
+                    let t = if vision {
+                        if quant.vision && t.shape().dims().len() == 2 {
+                            prepare(rest, t, true)
+                        } else {
+                            Ok(t)
+                        }
+                    } else if rest.ends_with("embed_tokens.weight") {
+                        Ok(t)
+                    } else {
+                        prepare(rest, t, quant.vlm)
+                    };
+                    Some(t.map(|t| (vision, rest.to_string(), t)))
+                } else if let Some(rest) = name.strip_prefix(EXPERT_PREFIX) {
+                    Some(
+                        prepare(rest, t, quant.expert)
+                            .map(|t| (false, format!("expert.{rest}"), t)),
+                    )
+                } else {
+                    name.strip_prefix("model.")
+                        .map(|rest| to_f32(t).map(|t| (false, format!("head.{rest}"), t)))
+                }
+            })
+            .collect::<Result<_>>()?;
         let mut vision_w = HashMap::new();
         let mut w = HashMap::new();
-        for (name, t) in weights {
-            if let Some(rest) = name.strip_prefix(VLM_PREFIX) {
-                if rest.starts_with("lm_head") {
-                    continue;
-                }
-                if rest.starts_with("model.vision_model") || rest.starts_with("model.connector") {
-                    vision_w.insert(rest.to_string(), t);
-                } else if rest.ends_with("embed_tokens.weight") {
-                    w.insert(rest.to_string(), t);
-                } else {
-                    w.insert(rest.to_string(), to_f32(t)?);
-                }
-            } else if let Some(rest) = name.strip_prefix(EXPERT_PREFIX) {
-                w.insert(format!("expert.{rest}"), to_f32(t)?);
-            } else if let Some(rest) = name.strip_prefix("model.") {
-                w.insert(format!("head.{rest}"), to_f32(t)?);
-            }
+        for (vision, name, t) in prepared {
+            if vision { &mut vision_w } else { &mut w }.insert(name, t);
         }
 
         let dims = |name: &str| -> Result<Vec<usize>> {
@@ -236,12 +338,23 @@ impl SmolVla {
 
     /// `y = x·Wᵀ (+ b)` over `rows` row vectors; `name` without `.weight`.
     fn linear(&self, x: &[f32], rows: usize, name: &str) -> Result<Vec<f32>> {
+        let started = std::time::Instant::now();
         let w = self.get(&format!("{name}.weight"))?;
         let in_dim = w.shape().dims()[1];
-        if x.len() != rows * in_dim {
+        let xt = if x.len() == rows * in_dim {
+            Tensor::from_f32(x, Shape::new([rows, in_dim]))
+        } else if rows > 0 && x.len() % rows == 0 && x.len() / rows < in_dim && in_dim % 32 == 0 {
+            // Zero-padded Q8_0 weight (see `prepare`): pad the activations too.
+            let k = x.len() / rows;
+            let mut padded = vec![0.0f32; rows * in_dim];
+            for (dst, row) in padded.chunks_exact_mut(in_dim).zip(x.chunks_exact(k)) {
+                dst[..k].copy_from_slice(row);
+            }
+            Tensor::from_f32_vec(padded, Shape::new([rows, in_dim]))
+        } else {
             bail!("{name}: input {} != {rows} x {in_dim}", x.len());
         }
-        let xt = Tensor::from_f32(x, Shape::new([rows, in_dim])).map_err(|e| anyhow!("{e}"))?;
+        .map_err(|e| anyhow!("{e}"))?;
         let mut y = matmul_nt(&xt, w)
             .map_err(|e| anyhow!("{name}: {e}"))?
             .to_f32_vec();
@@ -253,6 +366,7 @@ impl SmolVla {
                 }
             }
         }
+        lap(&T_LINEAR, started);
         Ok(y)
     }
 
@@ -333,6 +447,17 @@ impl SmolVla {
     /// may not attend to). Also returns the final-norm hidden states — unused
     /// by action sampling, kept for validation.
     pub fn prefix_pass(&self, embs: &[f32]) -> Result<(PrefixCache, Vec<f32>)> {
+        self.prefix_inner(embs, true)
+    }
+
+    /// The K/V cache only — what action sampling needs. Skips the last layer's
+    /// attention and MLP and the final norm: nothing reads their output (the
+    /// cache values are identical to [`prefix_pass`](Self::prefix_pass)).
+    pub fn prefix_cache(&self, embs: &[f32]) -> Result<PrefixCache> {
+        Ok(self.prefix_inner(embs, false)?.0)
+    }
+
+    fn prefix_inner(&self, embs: &[f32], want_output: bool) -> Result<(PrefixCache, Vec<f32>)> {
         let c = &self.cfg;
         let h = c.vlm_hidden;
         let n = embs.len() / h;
@@ -351,6 +476,7 @@ impl SmolVla {
             n,
             keys: Vec::with_capacity(c.layers),
             values: Vec::with_capacity(c.layers),
+            cross: Vec::with_capacity(c.layers),
         };
         for l in 0..c.layers {
             let p = format!("{TEXT}.layers.{l}");
@@ -362,6 +488,12 @@ impl SmolVla {
             rope(&mut k, c.kv_heads, c.head_dim, &positions, c.rope_base);
             let k = heads_major(&k, n, c.kv_heads, c.head_dim);
             let v = heads_major(&v, n, c.kv_heads, c.head_dim);
+            cache.cross.push(self.project_cross(l, &k, &v, n)?);
+            if l + 1 == c.layers && !want_output {
+                cache.keys.push(k);
+                cache.values.push(v);
+                return Ok((cache, Vec::new()));
+            }
             let att = attention(&q, &k, &v, n, n, c, &allow);
             cache.keys.push(k);
             cache.values.push(v);
@@ -378,6 +510,35 @@ impl SmolVla {
         }
         let out = self.rms_norm(&x, &format!("{TEXT}.norm.weight"))?;
         Ok((cache, out))
+    }
+
+    fn is_self_attn(&self, layer: usize) -> bool {
+        self.cfg.self_attn_every > 0 && layer % self.cfg.self_attn_every == 0
+    }
+
+    /// Cross-attention layer `l`: re-project the VLM layer's K/V
+    /// (`[kv_heads, n, hd]` → rows of `kv_heads·hd` → expert `k_proj` / `v_proj`
+    /// → heads-major again).
+    fn project_cross(
+        &self,
+        l: usize,
+        k: &[f32],
+        v: &[f32],
+        n: usize,
+    ) -> Result<Option<(Vec<f32>, Vec<f32>)>> {
+        if self.is_self_attn(l) {
+            return Ok(None);
+        }
+        let c = &self.cfg;
+        let p = format!("expert.layers.{l}.self_attn");
+        let k_rows = seq_major(k, n, c.kv_heads, c.head_dim);
+        let v_rows = seq_major(v, n, c.kv_heads, c.head_dim);
+        let k = self.linear(&k_rows, n, &format!("{p}.k_proj"))?;
+        let v = self.linear(&v_rows, n, &format!("{p}.v_proj"))?;
+        Ok(Some((
+            heads_major(&k, n, c.kv_heads, c.head_dim),
+            heads_major(&v, n, c.kv_heads, c.head_dim),
+        )))
     }
 
     // ── action expert ───────────────────────────────────────────────────────
@@ -405,7 +566,6 @@ impl SmolVla {
     pub fn denoise_step(&self, cache: &PrefixCache, x_t: &[f32], t: f32) -> Result<Vec<f32>> {
         let c = &self.cfg;
         let (s, n, hd) = (c.chunk, cache.n, c.head_dim);
-        let kv_w = c.kv_heads * hd;
         let mut x = self.embed_suffix(x_t, t)?;
 
         // Self-attention: all prefix tokens + causal inside the chunk.
@@ -423,7 +583,7 @@ impl SmolVla {
             let p = format!("expert.layers.{l}");
             let normed = self.rms_norm(&x, &format!("{p}.input_layernorm.weight"))?;
             let mut q = self.linear(&normed, s, &format!("{p}.self_attn.q_proj"))?;
-            let att = if c.self_attn_every > 0 && l % c.self_attn_every == 0 {
+            let att = if self.is_self_attn(l) {
                 let mut k = self.linear(&normed, s, &format!("{p}.self_attn.k_proj"))?;
                 let v = self.linear(&normed, s, &format!("{p}.self_attn.v_proj"))?;
                 rope(&mut q, c.heads, hd, &pos_self, c.rope_base);
@@ -443,17 +603,11 @@ impl SmolVla {
                 let v = join(&cache.values[l], &v);
                 attention(&q, &k, &v, s, n + s, c, &allow_self)
             } else {
-                // Re-project the VLM layer's K/V: [kv_heads, n, hd] → rows of
-                // kv_heads·hd → expert k_proj / v_proj → back to heads-major.
-                let k_rows = seq_major(&cache.keys[l], n, c.kv_heads, hd);
-                let v_rows = seq_major(&cache.values[l], n, c.kv_heads, hd);
-                debug_assert_eq!(k_rows.len(), n * kv_w);
-                let k = self.linear(&k_rows, n, &format!("{p}.self_attn.k_proj"))?;
-                let v = self.linear(&v_rows, n, &format!("{p}.self_attn.v_proj"))?;
+                let (k, v) = cache.cross[l]
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("prefix cache has no cross K/V for layer {l}"))?;
                 rope(&mut q, c.heads, hd, &pos_cross, c.rope_base);
-                let k = heads_major(&k, n, c.kv_heads, hd);
-                let v = heads_major(&v, n, c.kv_heads, hd);
-                attention(&q, &k, &v, s, n, c, &allow_cross)
+                attention(&q, k, v, s, n, c, &allow_cross)
             };
             let o = self.linear(&att, s, &format!("{p}.self_attn.o_proj"))?;
             for (xi, oi) in x.iter_mut().zip(&o) {
@@ -473,18 +627,49 @@ impl SmolVla {
     /// `num_steps` Euler steps. Returns `[chunk, max_action_dim]` in the
     /// policy's normalized action space.
     pub fn sample_actions(&self, cache: &PrefixCache, noise: &[f32]) -> Result<Vec<f32>> {
+        self.sample_actions_steps(cache, noise, self.cfg.num_steps)
+    }
+
+    /// [`sample_actions`](Self::sample_actions) with an explicit number of Euler
+    /// steps. Fewer steps cost proportionally less and give a coarser
+    /// integration of the same flow (a different, less accurate chunk).
+    pub fn sample_actions_steps(
+        &self,
+        cache: &PrefixCache,
+        noise: &[f32],
+        num_steps: usize,
+    ) -> Result<Vec<f32>> {
         let c = &self.cfg;
+        if num_steps == 0 {
+            bail!("num_steps must be at least 1");
+        }
         if noise.len() != c.chunk * c.max_action_dim {
             bail!("noise must be [{}, {}]", c.chunk, c.max_action_dim);
         }
-        let dt = -1.0f64 / c.num_steps as f64;
+        let dt = -1.0f64 / num_steps as f64;
         let mut x = noise.to_vec();
-        for step in 0..c.num_steps {
+        let timing = std::env::var_os("SAPIENT_VLA_TIMING").is_some();
+        let started = std::time::Instant::now();
+        let relaxed = std::sync::atomic::Ordering::Relaxed;
+        let (l0, a0) = (T_LINEAR.load(relaxed), T_ATTN.load(relaxed));
+        for step in 0..num_steps {
             let t = (1.0 + step as f64 * dt) as f32;
             let v = self.denoise_step(cache, &x, t)?;
             for (xi, vi) in x.iter_mut().zip(&v) {
                 *xi += dt as f32 * vi;
             }
+        }
+        if timing {
+            let ms = |ns: u64| ns as f64 / 1e6;
+            let (lin, att) = (T_LINEAR.load(relaxed) - l0, T_ATTN.load(relaxed) - a0);
+            let total = started.elapsed().as_nanos() as u64;
+            eprintln!(
+                "[vla] {} denoise steps · linear {:.0} · attention {:.0} · other {:.0} ms",
+                num_steps,
+                ms(lin),
+                ms(att),
+                ms(total.saturating_sub(lin + att))
+            );
         }
         Ok(x)
     }
@@ -549,6 +734,7 @@ fn attention(
     c: &SmolVlaConfig,
     allow: &[bool],
 ) -> Vec<f32> {
+    let started = std::time::Instant::now();
     let (heads, hd) = (c.heads, c.head_dim);
     let rep = heads / c.kv_heads;
     let scale = (hd as f32).powf(-0.5);
@@ -586,7 +772,9 @@ fn attention(
             }
             sgemm_serial(sq, sk, hd, &scores, v_h, hd, 1, out);
         });
-    seq_major(&out_h, sq, heads, hd)
+    let out = seq_major(&out_h, sq, heads, hd);
+    lap(&T_ATTN, started);
+    out
 }
 
 /// Sine-cosine embedding of the flow time `t` (openpi's

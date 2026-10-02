@@ -40,7 +40,7 @@ pub use llama::LlamaForward;
 pub use mlx_engine::MlxForwardEngine;
 pub use phi::PhiForward;
 pub use siglip::{SiglipConfig, SiglipVision};
-pub use smolvla::{PrefixCache, SmolVla, SmolVlaConfig};
+pub use smolvla::{PrefixCache, SmolVla, SmolVlaConfig, SmolVlaQuant};
 pub use snac::{normalize_snac_weights, orpheus_codes_to_snac, SnacDecoder};
 #[cfg(feature = "wgpu")]
 pub use wgpu_engine::WgpuForwardEngine;

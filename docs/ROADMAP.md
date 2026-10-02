@@ -63,9 +63,12 @@
   `sapient act` — VLM prefix pass that keeps per-layer K/V, the 16-layer action expert
   (alternating self/cross attention), 10-step flow matching → 50×32 action chunk;
   matches the LeRobot reference to 4e-6 (`tests/smolvla_reference.rs`, `vla_e2e`).
-  First cut is f32 on CPU, ~2.0 s/chunk on M4. Open VLA rungs: quantized linears with a
-  measured action-error budget, latency + jitter benchmark on M4 and Pi 5, skipping the
-  unused last-layer prefix work, asynchronous chunk execution, a fine-tuned checkpoint
+  **Quantized + served (2026-10-02):** Q8_0 linears by default (the expert's 720-wide
+  inputs zero-padded to 736), last prefix layer's unused attention/MLP skipped, cross
+  K/V projected once per observation → M4 1.83 s (f32) → **0.93 s** per chunk, action
+  error max 0.035 vs LeRobot-bf16's own 0.014; `POST /v1/actions` in `sapient serve`.
+  Open VLA rungs: latency + jitter benchmark on M4 and Pi 5, the vision tower (now 57%
+  of a chunk), asynchronous chunk execution, error measured over many observations, a fine-tuned checkpoint
   with real normalization statistics, catalog entry. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five
   bit-identical kernel changes; open: the Q8_0 per-block f32 scale tail, the

@@ -156,12 +156,24 @@ sapient see xray.png -p "Describe findings." --model medgemma-4b     # medical (
 # SmolVLA: camera image(s) + instruction + robot state -> the next 50 actions
 sapient act camera.jpg --task "pick up the red cube" --state "0.1,0.2,-0.3,0.4,0,0.5"
 sapient act top.jpg wrist.jpg --task "pick up the red cube" --json   # two cameras, JSON output
+sapient act camera.jpg --task "pick up the red cube" --f32           # exact reference precision
+
+# Keep the policy loaded and call it over HTTP
+sapient serve lerobot/smolvla_base
+curl localhost:11435/v1/actions -H 'Content-Type: application/json' -d '{
+  "task": "pick up the red cube",
+  "images": ["data:image/jpeg;base64,..."],
+  "state": [0.1, 0.2, -0.3, 0.4, 0, 0.5]
+}'
 ```
 
-`sapient act` runs [SmolVLA](https://huggingface.co/lerobot/smolvla_base) (450M) and matches
-LeRobot's reference actions to 4e-6 on the same inputs. About 2 s per 50-action chunk
-on an Apple M4 CPU with one camera, not yet optimized. The base checkpoint is meant to
-be fine-tuned for a robot; it prints actions in the model's normalized space.
+`sapient act` runs [SmolVLA](https://huggingface.co/lerobot/smolvla_base) (450M). On an
+Apple M4 CPU with one camera a 50-action chunk takes about 0.9 s (8-bit weights, the
+default) or 1.8 s with `--f32`. The f32 path matches LeRobot's reference actions to 4e-6;
+the 8-bit default moves them by at most 0.035 in normalized units, against 0.014 for
+LeRobot's own default bf16 precision (one test observation — see `docs/BENCHMARKS.md`).
+The base checkpoint is meant to be fine-tuned for a robot; it prints actions in the
+model's normalized space.
 
 **Voice conversation**
 
@@ -221,6 +233,7 @@ sapient serve --port 8080 --speculative
 | `POST /v1/completions` | Raw text completion |
 | `POST /v1/audio/transcriptions` | OpenAI-compatible speech-to-text (multipart audio upload) |
 | `POST /v1/audio/speech` | OpenAI-compatible text-to-speech → WAV (Kokoro, 54 voices) |
+| `POST /v1/actions` | Robot actions from camera frames + instruction + state (SmolVLA; after v0.6.1) |
 | `GET /v1/health` | Liveness check |
 
 `/v1/chat/completions` accepts OpenAI-style image content parts as **base64 data URIs**,

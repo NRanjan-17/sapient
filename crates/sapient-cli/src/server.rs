@@ -36,7 +36,7 @@ use tracing::info;
 
 use sapient_generate::{
     GenerationConfig, KokoroTts, LoadOptions, Pipeline, SamplingStrategy, SpeculativePipeline,
-    TranscribeOptions, TranscribePipeline, Tts, VlmPipeline, DEFAULT_KOKORO_VOICE,
+    TranscribeOptions, TranscribePipeline, Tts, VlaPipeline, VlmPipeline, DEFAULT_KOKORO_VOICE,
 };
 use sapient_tokenizers::{ChatMessage, ToolCall};
 
@@ -236,6 +236,10 @@ struct ServeState {
     /// `audio_cache`. A single entry serves every voice — all 54 embeddings are
     /// resident in the loaded model.
     tts_cache: Arc<Mutex<ModelCache<Arc<KokoroTts>>>>,
+    /// Parallel LRU cache for vision-language-action policies (POST
+    /// /v1/actions). `VlaPipeline::predict` takes `&self`, so one resident
+    /// policy serves every request.
+    vla_cache: Arc<Mutex<ModelCache<Arc<VlaPipeline>>>>,
     /// Serializes model loads so two concurrent first-requests for the same model
     /// don't both download/load it, and loads don't thrash each other.
     load_lock: Arc<Mutex<()>>,
@@ -379,6 +383,34 @@ impl ServeState {
         let evicted = self.tts_cache.lock().await.insert(entry.clone());
         for id in &evicted {
             info!("evicted TTS '{id}' from tts cache (LRU)");
+        }
+        Ok(entry)
+    }
+
+    /// Like [`get_or_load_audio`](Self::get_or_load_audio), but for SmolVLA
+    /// policies backing `POST /v1/actions`.
+    async fn get_or_load_vla(&self, model_id: &str) -> Result<Arc<CachedModel<Arc<VlaPipeline>>>> {
+        if let Some(m) = self.vla_cache.lock().await.touch(model_id) {
+            return Ok(m);
+        }
+        let _load = self.load_lock.lock().await;
+        if let Some(m) = self.vla_cache.lock().await.touch(model_id) {
+            return Ok(m);
+        }
+
+        info!("loading VLA policy '{model_id}'…");
+        let vla = VlaPipeline::from_pretrained(model_id)
+            .await
+            .with_context(|| format!("failed to load VLA policy '{model_id}'"))?;
+        let entry = Arc::new(CachedModel {
+            model_id: model_id.to_string(),
+            payload: Arc::new(vla),
+            // ~0.5 GB resident with Q8_0 linears.
+            bytes: 512 * 1024 * 1024,
+        });
+        let evicted = self.vla_cache.lock().await.insert(entry.clone());
+        for id in &evicted {
+            info!("evicted VLA '{id}' from vla cache (LRU)");
         }
         Ok(entry)
     }
@@ -557,6 +589,28 @@ fn sanitize_tool(tool: &serde_json::Value) -> serde_json::Value {
         }
     }
     strip(tool)
+}
+
+/// `POST /v1/actions` body — one observation for a vision-language-action policy.
+#[derive(Debug, Deserialize)]
+struct ActionsRequest {
+    /// SmolVLA checkpoint (Hugging Face repo id). Defaults to `lerobot/smolvla_base`.
+    #[serde(default)]
+    model: Option<String>,
+    /// The instruction, e.g. "pick up the red cube".
+    task: String,
+    /// Camera frames as base64 data URIs (`data:image/jpeg;base64,…`), in the
+    /// policy's camera order. At least one.
+    images: Vec<String>,
+    /// Robot state. Defaults to zeros.
+    #[serde(default)]
+    state: Option<Vec<f32>>,
+    /// Seed for the flow-matching start noise (default 0).
+    #[serde(default)]
+    seed: Option<u64>,
+    /// Flow-matching steps (default: the checkpoint's). Fewer is faster and coarser.
+    #[serde(default)]
+    steps: Option<usize>,
 }
 
 /// `POST /v1/audio/speech` body (OpenAI shape).
@@ -1069,12 +1123,14 @@ async fn handle_health(State(state): State<ServeState>) -> impl IntoResponse {
         (guard.ids(), guard.mru_id())
     };
     let audio_resident = state.audio_cache.lock().await.ids();
+    let vla_resident = state.vla_cache.lock().await.ids();
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
         "loaded_model": active,
         "resident_models": resident,
         "audio_models": audio_resident,
+        "vla_models": vla_resident,
     }))
 }
 
@@ -1269,6 +1325,88 @@ async fn handle_audio_speech(
         // An unknown voice lands here — a client error, not a server fault.
         Ok(Err(e)) => model_err(format!("{e:#}")),
         Err(e) => server_err(format!("speech synthesis task panicked: {e}")),
+    }
+}
+
+/// Whether a model id names a vision-language-action policy (served by
+/// `POST /v1/actions`, preloaded through the VLA cache).
+fn is_vla_model(model_id: &str) -> bool {
+    model_id.to_ascii_lowercase().contains("smolvla")
+}
+
+/// `POST /v1/actions` — predict a chunk of robot actions from one observation.
+///
+/// The policy stays resident between calls, so a request costs inference only
+/// (no load, no re-quantization). Response: `actions` (`steps × dim` rows),
+/// `robot_units` (false = normalized space) and a `timing_ms` split.
+async fn handle_actions(
+    State(state): State<ServeState>,
+    Json(req): Json<ActionsRequest>,
+) -> Response {
+    let model_id = req
+        .model
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| sapient_generate::SMOLVLA_REPO.to_string());
+    if req.images.is_empty() {
+        return model_err("images must hold at least one camera frame (base64 data URI)");
+    }
+    if req.steps == Some(0) {
+        return model_err("steps must be at least 1");
+    }
+    let mut frames = Vec::with_capacity(req.images.len());
+    for (i, uri) in req.images.iter().enumerate() {
+        match decode_image_data_uri(uri) {
+            Ok(bytes) => frames.push(bytes),
+            Err(e) => return model_err(format!("images[{i}]: {e:#}")),
+        }
+    }
+
+    let vla = match state.get_or_load_vla(&model_id).await {
+        Ok(v) => v,
+        Err(e) => return server_err(format!("{e:#}")),
+    };
+    let permit = match state.inference_sem.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => return server_err("server is shutting down"),
+    };
+
+    let policy = vla.payload.clone();
+    let robot_state = req.state.unwrap_or_else(|| vec![0.0; policy.state_dim()]);
+    let (task, seed, steps) = (req.task, req.seed.unwrap_or(0), req.steps);
+    let run = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let pixels = frames
+            .iter()
+            .map(|b| policy.preprocess_image_bytes(b))
+            .collect::<Result<Vec<_>>>()?;
+        policy.predict_steps(&pixels, &task, &robot_state, seed, steps)
+    })
+    .await;
+
+    match run {
+        Ok(Ok(chunk)) => {
+            let rows: Vec<&[f32]> = (0..chunk.steps).map(|i| chunk.row(i)).collect();
+            let t = &chunk.timing;
+            Json(json!({
+                "object": "action_chunk",
+                "model": model_id,
+                "actions": rows,
+                "steps": chunk.steps,
+                "dim": chunk.dim,
+                "robot_units": chunk.robot_units,
+                "timing_ms": {
+                    "vision": t.vision_ms,
+                    "prefix": t.prefix_ms,
+                    "denoise": t.denoise_ms,
+                    "total": t.total_ms,
+                },
+                "prefix_tokens": t.prefix_tokens,
+            }))
+            .into_response()
+        }
+        // Undecodable image, wrong state length… — the caller's input.
+        Ok(Err(e)) => model_err(format!("{e:#}")),
+        Err(e) => server_err(format!("action prediction task panicked: {e}")),
     }
 }
 
@@ -2013,6 +2151,10 @@ pub async fn serve_llm(
             max_models,
             budget_bytes,
         ))),
+        vla_cache: Arc::new(Mutex::new(ModelCache::<Arc<VlaPipeline>>::new(
+            max_models,
+            budget_bytes,
+        ))),
         load_lock: Arc::new(Mutex::new(())),
         inference_sem: Arc::new(tokio::sync::Semaphore::new(concurrency)),
         backend: backend.to_string(),
@@ -2021,7 +2163,14 @@ pub async fn serve_llm(
         draft_model: draft_model.map(str::to_string),
     };
 
-    if let Some(model_id) = preload_model {
+    if let Some(model_id) = preload_model.filter(|m| is_vla_model(m)) {
+        // A VLA policy: load it into the VLA cache so the first
+        // /v1/actions call is already warm.
+        let spinner = crate::ui::spinner(format!("loading {model_id}…"));
+        state.get_or_load_vla(model_id).await?;
+        spinner.finish_and_clear();
+        print_banner(port, backend, Some((model_id, "SmolVLA", " · Q8_0")));
+    } else if let Some(model_id) = preload_model {
         let spinner = crate::ui::spinner(format!("loading {model_id}…"));
         let entry = state.get_or_load(model_id).await?;
         spinner.finish_and_clear();
@@ -2050,6 +2199,8 @@ pub async fn serve_llm(
         )
         // Text-to-speech. Returns a WAV body, not JSON.
         .route("/v1/audio/speech", post(handle_audio_speech))
+        // Robot actions from camera frames + instruction + state (SmolVLA).
+        .route("/v1/actions", post(handle_actions))
         .layer(CorsLayer::permissive())
         // Allow large prompts (long context / pasted documents) but cap to guard
         // against unbounded request bodies. 32 MiB ≫ any realistic chat payload.
@@ -2107,6 +2258,10 @@ fn print_banner(port: u16, backend: &str, loaded: Option<(&str, &str, &str)>) {
         "  {}  POST /v1/completions       (stream=true|false)",
         console::style("·").dim()
     );
+    println!(
+        "  {}  POST /v1/actions           (SmolVLA robot actions)",
+        console::style("·").dim()
+    );
     println!();
     println!("  {}", console::style("Example:").dim());
     println!(
@@ -2129,6 +2284,28 @@ fn print_banner(port: u16, backend: &str, loaded: Option<(&str, &str, &str)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actions_request_defaults_and_vla_routing() {
+        let req: ActionsRequest = serde_json::from_str(
+            r#"{"task":"pick up the cube","images":["data:image/png;base64,AAAA"]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.task, "pick up the cube");
+        assert_eq!(req.images.len(), 1);
+        assert!(req.model.is_none() && req.state.is_none() && req.steps.is_none());
+
+        let req: ActionsRequest = serde_json::from_str(
+            r#"{"model":"lerobot/smolvla_base","task":"t","images":[],"state":[0.5,-1],"seed":7,"steps":5}"#,
+        )
+        .unwrap();
+        assert_eq!(req.state.as_deref(), Some(&[0.5f32, -1.0][..]));
+        assert_eq!((req.seed, req.steps), (Some(7), Some(5)));
+
+        assert!(is_vla_model("lerobot/smolvla_base"));
+        assert!(is_vla_model("me/SmolVLA-so100-finetune"));
+        assert!(!is_vla_model("openhorizon/smolvlm2-500m"));
+    }
 
     // ── Tool calling ────────────────────────────────────────────────────────
     //
