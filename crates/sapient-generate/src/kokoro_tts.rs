@@ -44,6 +44,46 @@ pub const DEFAULT_KOKORO_VOICE: &str = "af_heart";
 /// same pattern the SNAC codec uses for its `mlx-community` mirror.
 pub const KOKORO_REPO: &str = "sai1974dev/kokoro-82m-safetensors";
 
+/// Sub-directory (of the model repo, or of a local model dir) that holds the
+/// G2P data: the gzip-compressed pronunciation dictionaries and tagger weights
+/// listed in `misaki_rs::data::DATA_FILES`. They used to be compiled into the
+/// binary (35.5 MB of JSON); they are now fetched with the model unless the
+/// `embed-g2p` feature is on.
+pub const KOKORO_G2P_DIR: &str = "g2p";
+
+/// Point the G2P at `dir/g2p` when it holds the data files. Returns whether
+/// the G2P data is now resolvable (from that directory or embedded).
+fn use_g2p_dir(dir: &Path) -> bool {
+    let g2p = dir.join(KOKORO_G2P_DIR);
+    if misaki_rs::data::DATA_FILES
+        .iter()
+        .all(|f| g2p.join(f).is_file())
+    {
+        misaki_rs::data::set_data_dir(g2p);
+    }
+    misaki_rs::data::available()
+}
+
+/// Download the G2P data files from `repo` into the Hub cache and register them.
+async fn download_g2p(hub: &HubClient, repo: &str) -> Result<()> {
+    let names: Vec<String> = misaki_rs::data::DATA_FILES
+        .iter()
+        .map(|f| format!("{KOKORO_G2P_DIR}/{f}"))
+        .collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let files = hub.download_files(repo, &refs).await.with_context(|| {
+        format!(
+            "downloading Kokoro pronunciation data from '{repo}' (needed once; \
+             build with the `embed-g2p` feature for a fully offline binary)"
+        )
+    })?;
+    let dir = files[0]
+        .parent()
+        .ok_or_else(|| anyhow!("kokoro: g2p download has no parent dir"))?;
+    misaki_rs::data::set_data_dir(dir);
+    Ok(())
+}
+
 /// A Kokoro-82M text-to-speech backend.
 pub struct KokoroTts {
     model: KokoroModel,
@@ -63,6 +103,15 @@ impl KokoroTts {
     pub fn from_dir(dir: &Path) -> Result<Self> {
         let model = KokoroModel::from_dir(dir)
             .with_context(|| format!("load Kokoro model from {dir:?}"))?;
+        if !use_g2p_dir(dir) {
+            anyhow::bail!(
+                "Kokoro pronunciation data not found: expected {:?} in {:?}. Use \
+                 `KokoroTts::from_pretrained` (downloads it), copy the files there, or \
+                 build with the `embed-g2p` feature",
+                misaki_rs::data::DATA_FILES,
+                dir.join(KOKORO_G2P_DIR)
+            );
+        }
         Ok(Self {
             model,
             g2p: Mutex::new(G2P::new(lang(false))),
@@ -76,7 +125,13 @@ impl KokoroTts {
     /// `config.json` + `model.safetensors` + `voices.safetensors` from `repo`.
     pub async fn from_pretrained(repo: &str) -> Result<Self> {
         if let Ok(dir) = std::env::var("SAPIENT_KOKORO_DIR") {
-            return Self::from_dir(Path::new(&dir));
+            let dir = Path::new(&dir);
+            // A local weights dir usually has no G2P data: fetch it from the
+            // mirror unless it is already there or embedded.
+            if !use_g2p_dir(dir) {
+                download_g2p(&HubClient::new()?, repo).await?;
+            }
+            return Self::from_dir(dir);
         }
         let hub = HubClient::new()?;
         let files: Vec<PathBuf> = hub
@@ -89,6 +144,9 @@ impl KokoroTts {
         let dir = files[0]
             .parent()
             .ok_or_else(|| anyhow!("kokoro: download has no parent dir"))?;
+        if !use_g2p_dir(dir) {
+            download_g2p(&hub, repo).await?;
+        }
         Self::from_dir(dir)
     }
 

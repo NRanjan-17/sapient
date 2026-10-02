@@ -205,7 +205,9 @@ reference. Weights: run `python3 scripts/convert_kokoro_to_safetensors.py --out 
 once (converts the upstream `.pth` pickle → safetensors; already hosted at `sai1974dev/kokoro-82m-safetensors`),
 then point `SAPIENT_KOKORO_DIR` at it for the ignored coherence tests (`kokoro/stage_tests.rs`
 validate every stage vs a committed PyTorch fixture; `sapient-generate/tests/kokoro_tts_e2e.rs` is the
-text→audio + RTF check). G2P is the pure-Rust `misaki-rs` (no espeak). Editing trap: the NSF source
+text→audio + RTF check). G2P is the pure-Rust `misaki-rs` (no espeak), vendored
+at `vendor/misaki-rs` (MIT — keep its `LICENSE`/`VENDORED.md`; its dictionaries are downloaded
+with the model, or built in with `--features embed-g2p`). Editing trap: the NSF source
 **omits** training-time noise/random-phase for determinism, so validate by **energy-envelope/spectrogram
 correlation** (≈0.99), not max_err, plus the **speak→transcribe round-trip**.
 

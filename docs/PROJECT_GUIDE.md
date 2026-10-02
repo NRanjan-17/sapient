@@ -355,7 +355,8 @@ tokens, streams text, and stops at the right time.
   decodes them with `SnacDecoder` into a 24 kHz WAV. Powers `sapient speak orpheus-3b`. Eight
   built-in voices; SNAC weights auto-download (or `SAPIENT_SNAC_DIR`).
 - `kokoro_tts.rs` — `KokoroTts` (`Tts` impl): the **real-time** text-to-speech path. Text →
-  phonemes via the pure-Rust `misaki-rs` G2P (no espeak) → `KokoroModel` (one non-autoregressive
+  phonemes via the pure-Rust `misaki-rs` G2P (no espeak; vendored in `vendor/misaki-rs`, its
+  dictionaries downloaded with the model unless built with `embed-g2p`) → `KokoroModel` (one non-autoregressive
   forward pass) → 24 kHz WAV. `from_default()` pulls the converted safetensors mirror (or
   `SAPIENT_KOKORO_DIR`). Powers `sapient speak kokoro-82m` and is the default `converse --speak` TTS.
   `sapient speak` **plays the synthesized audio through the speaker by default** (and still writes

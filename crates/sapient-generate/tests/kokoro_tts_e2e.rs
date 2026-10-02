@@ -25,6 +25,9 @@ fn write_wav(path: &str, samples: &[f32], sr: u32) {
     for &s in samples {
         data.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
     }
+    if let Some(dir) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
     let mut f = std::fs::File::create(path).unwrap();
     let n = data.len() as u32;
     f.write_all(b"RIFF").unwrap();
@@ -45,7 +48,13 @@ fn write_wav(path: &str, samples: &[f32], sr: u32) {
 #[test]
 #[ignore = "needs converted Kokoro weights via SAPIENT_KOKORO_DIR"]
 fn kokoro_tts_synthesizes_text() {
-    let tts = KokoroTts::from_dir(&kokoro_dir()).expect("load KokoroTts");
+    // `from_pretrained` honours SAPIENT_KOKORO_DIR for the weights and fetches
+    // the G2P data (no longer compiled in) when that directory lacks it.
+    let _ = kokoro_dir(); // keep the "env var must be set" check
+    let tts = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(KokoroTts::from_pretrained(KOKORO_REPO))
+        .expect("load KokoroTts");
     let text = "Hello there. How are you today?";
 
     let phonemes = tts.phonemize(text).expect("g2p");

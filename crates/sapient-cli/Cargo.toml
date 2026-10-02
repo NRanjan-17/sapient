@@ -65,6 +65,9 @@ mlx = ["sapient-generate/mlx"]
 wgpu = ["sapient-generate/wgpu"]
 # Live mic/speaker speech-to-speech (`sapient converse`).
 audio-io = ["sapient-generate/audio-io", "dep:sapient-audio"]
+# Embed Kokoro's pronunciation dictionaries (adds ~7.6 MB) so `sapient speak`
+# needs no dictionary download. Off by default: they are fetched with the model.
+embed-g2p = ["sapient-generate/embed-g2p"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 sapient-backends-metal = { workspace = true }

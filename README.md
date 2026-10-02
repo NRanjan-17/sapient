@@ -132,6 +132,7 @@ sapient transcribe whisper-base long.wav --timestamps     # long audio, with tim
 sapient transcribe whisper-base clip.wav --beam-size 5    # beam search
 
 # Text-to-speech — Kokoro-82M (about 2× real-time on an M4 CPU; 54 voices)
+# The first use downloads the model and its 7.6 MB pronunciation data.
 sapient speak kokoro-82m "Hello, this is sapient speaking."              # plays + writes speech.wav
 sapient speak kokoro-82m "The quick brown fox." --voice af_bella -o fox.wav
 sapient speak kokoro-82m "Save it, don't play it." --no-play -o out.wav
@@ -514,7 +515,8 @@ rows were re-measured independently on v0.6.0 (2026-10-01) and the ratios held.
 - **TTFT.** Ollama's ~130–150 ms figure is a `total − eval` proxy, not a streamed
   first token, so the TTFT ranking is indicative.
 - **Quality.** No perplexity or eval-suite comparison has been run yet.
-- **Binary size.** v0.6.0 ships a ~50 MB CPU build; the `-metal` build is ~60 MB plus
+- **Binary size.** v0.6.0/v0.6.1 ship a ~50 MB CPU build (about 17 MB on main, after
+  Kokoro's dictionaries moved out of the binary); the `-metal` build is ~60 MB plus
   an 88 MB `mlx.metallib`.
 
 </details>
@@ -753,6 +755,10 @@ cargo build --workspace --release
 # Apple Silicon MLX GPU build:
 # requires Xcode's Metal Toolchain (`xcodebuild -downloadComponent MetalToolchain`)
 cargo build -p sapient-cli --release --features mlx
+
+# Fully offline text-to-speech: build Kokoro's pronunciation data into the binary
+# (+7.6 MB) instead of downloading it with the model on first use:
+cargo build -p sapient-cli --release --features embed-g2p
 
 # Binary will be at:
 ./target/release/sapient

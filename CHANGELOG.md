@@ -5,6 +5,19 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 📦 Binary 52 MB → 17 MB
+
+- Two-thirds of the binary was Kokoro's English pronunciation dictionaries and
+  tagger weights (35.5 MB of JSON embedded by the `misaki-rs` crate). They are now
+  gzip-compressed (7.6 MB) and **downloaded next to the Kokoro model** on the first
+  `sapient speak` / `converse --speak`. CPU build on Apple Silicon: 52.5 MB → 16.7 MB.
+- `--features embed-g2p` builds them into the binary instead (24.6 MB) for fully
+  offline use.
+- Speech output is byte-identical to before on three test voices (US and British),
+  with either build.
+- `misaki-rs` is vendored under `vendor/misaki-rs` (MIT) with those changes; see its
+  `VENDORED.md` and `NOTICE`.
+
 ### 👁️ SmolVLM2-500M
 
 - `sapient see --model smolvlm2-500m`: the SmolVLM2 family loads through the existing
