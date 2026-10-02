@@ -1046,6 +1046,25 @@ Pi 5 two cameras: 6.25 → 5.45 s. Attention tile size on the Pi (int8): 64 KB 4
 The int8 attention runs at ~41 GMAC/s on the Pi against ~74 for the tower's linears; the
 rest is the f32 softmax and quantizing the probabilities.
 
+### Fused attention softmax: measured, not adopted (2026-10-02)
+
+Fusing the int8 attention's softmax and probability quantization into two NEON passes
+(row max; then exp, block quantization and a vector sum per 32 keys) replaced five
+passes. Its int8 values and scales were proven identical to the unfused code by a unit
+test; only the order of the per-row sum changed (relative difference ~1e-7).
+
+- Pi 5: attention 472 → ~420 ms, chunk 3.29 → ~3.24 s (four runs, 3226–3256 ms).
+  Apple M4: attention 68 → 60 ms, chunk ~0.60 → ~0.58 s.
+- Eight observations: `fast` RMS 0.0109 — inside the 20% acceptance rule (≤ 0.0156).
+- Fixture observation alone: RMS 0.0075 → 0.0100, which trips that test's guard
+  (0.008, set at 2× one earlier measurement).
+
+Not adopted: passing would have meant loosening a guard, and 1.5% on the Pi did not
+justify it. The finding that stays: **a 1e-7 change in one row sum moved the
+single-observation error by 33%.** The action error is chaotic at this scale; any
+single-observation figure carries roughly ±50% noise, and accuracy decisions belong on
+the eight-observation test.
+
 ---
 
 ## Binary & deployment
