@@ -1135,8 +1135,12 @@ length `c` = 50 (`auto_trigger` in `vla_async.rs`):
 
 The two non-trivial regimes follow from aligning chunks by executed actions: a chunk
 requested with `q` actions queued arrives with `c − min(q, d)` usable ones. The
-formulas predict the earlier fixed-threshold Pi runs within 2 points (10 Hz: 24%
-predicted, 22.7% measured; 15 Hz: equal for both, 45.6% both).
+formulas predict the earlier fixed-threshold Pi runs' asynchronous stall rates within
+2 points (10 Hz: 24% predicted, 22.7% measured). Synchronous rates came out 2.7–6
+points below the prediction (5 Hz: 25% predicted, 18.6% measured; 15 Hz: 50% vs
+45.6%), because a 40 s run holds only 3–8 chunk cycles and ends mid-cycle; longer runs
+are needed for a tighter check. Which policy stalls less was predicted correctly at
+every rate.
 
 | Machine | Rate | Latency | `auto` chose | Stalls | Best fixed threshold |
 |---|---|---|---|---|---|

@@ -121,8 +121,11 @@ impl std::fmt::Display for Threshold {
 ///   than it gains; synchronous execution (`0`: ask only when empty) stalls
 ///   least.
 ///
-/// Measured on a Pi 5 (d = 33, 50, 99 ticks at 10, 15, 30 Hz) the async and
-/// synchronous stall rates matched these formulas within 2 points.
+/// Measured on a Pi 5 (d = 33, 50, 99 ticks at 10, 15, 30 Hz, 40 s runs) the
+/// async stall rates matched these formulas within 2 points; synchronous ones
+/// came out 2.7–6 points lower, because a 40 s run holds only a few chunk
+/// cycles and ends mid-cycle. The ordering (which policy stalls less) matched
+/// at every rate.
 pub fn auto_trigger(d: u64, c: usize) -> usize {
     let d = d as usize;
     if d >= c {
