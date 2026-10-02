@@ -72,7 +72,11 @@
   observations against LeRobot's bf16 yardstick → M4 **0.66 s**, **Pi 5 3.65 s** per
   chunk (`fast`); then int8 vision attention for `fast` (Pi attention 0.86 → 0.47 s,
   chunk **3.29 s**; M4 0.61 s; no measurable action-error increase). Open VLA rungs:
-  the expert's per-step overhead, fused softmax + quantization in attention, jitter,
+  **Real data + async (2026-10-02):** 24 real SO-100 frames — `exact` = LeRobot to 2e-6,
+  `fast` RMS 0.019 vs LeRobot-bf16 0.011, offline prediction error unchanged by any
+  mode; `AsyncActions` + `sapient act --simulate` — stall-free at 30 Hz on M4 and 5 Hz
+  on Pi 5. Open VLA rungs: a fine-tuned checkpoint + simulator for task success, the
+  expert's per-step overhead, smarter async (latency-aware threshold), jitter under load,
   asynchronous chunk execution, a real dataset and task success, a fine-tuned checkpoint
   with real normalization statistics, catalog entry. Tower perf
   (2026-10-02): image encode M4 1140 → ~555 ms, Pi 5 7.3 → 3.5 s via five

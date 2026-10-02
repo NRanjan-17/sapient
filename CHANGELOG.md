@@ -42,6 +42,17 @@ section below as the GitHub release body.
   state/action statistics, so its actions are in normalized space; checkpoints that carry
   `observation.state.*` / `action.*` statistics are normalized and un-normalized.
 
+### 🤖 SmolVLA: real-data check and asynchronous chunking
+
+- Checked on 24 real frames from an SO-100 dataset (two cameras): `exact` matches
+  LeRobot to 2e-6; `fast` deviates by RMS 0.019 and `balanced` by 0.014, against 0.011
+  for LeRobot's own bf16 default. No mode changes the error against the recorded
+  actions (0.79). `scripts/smolvla_dataset_eval.py` produces the comparison data.
+- `sapient act --simulate --hz H [--threshold T]`: a control loop that computes the next
+  chunk while the current one executes (`AsyncActions` in the library) and reports
+  stalls and inference latency. No stalls at 30 Hz on an Apple M4 or at 5 Hz on a
+  Raspberry Pi 5; at 30 Hz on the Pi waiting for each chunk (`--threshold 0`) is better.
+
 ### ⚡ Faster 8-bit matrix multiply
 
 - The Q8_0 GEMM used by vision towers, prefill and SmolVLA is 1.3–1.7× faster on an

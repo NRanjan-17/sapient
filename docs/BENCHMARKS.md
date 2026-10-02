@@ -1065,6 +1065,61 @@ single-observation error by 33%.** The action error is chaotic at this scale; an
 single-observation figure carries roughly ±50% noise, and accuracy decisions belong on
 the eight-observation test.
 
+### SmolVLA on real robot data (2026-10-02)
+
+24 observations from the SO-100 dataset `lerobot/svla_so100_pickplace` (8 episodes ×
+3 frames, two 480×640 cameras, the dataset's own instruction), written by
+`scripts/smolvla_dataset_eval.py` with LeRobot's outputs on the same inputs; compared by
+`smolvla_real_observations` in `crates/sapient-generate/tests/vla_e2e.rs`. Actions in
+the dataset's normalized units (recorded action RMS 1.0). `smolvla_base` has no state
+statistics for this robot, so state and recorded actions are normalized with the
+dataset's own statistics; the base model was pretrained on SO-100 community data but
+not fine-tuned on this dataset.
+
+| | vs LeRobot f32 (RMS) | max | vs recorded actions (RMS) |
+|---|---|---|---|
+| LeRobot f32 | — | — | 0.788 |
+| LeRobot bf16 default (yardstick) | 1.10e-2 | 0.141 | 0.790 |
+| Sapient `exact` | **2.4e-6** | 1.9e-5 | 0.788 |
+| Sapient `balanced` | 1.38e-2 | 0.166 | 0.788 |
+| Sapient `fast` | 1.90e-2 | 0.157 | 0.785 |
+
+- `exact` reproduces LeRobot on real frames, which also checks the resize-with-pad from
+  480×640 and the two-camera prefix — both previously verified only on synthetic input.
+- `fast` deviates 1.7× as much as LeRobot's own bf16 default; `balanced` 1.26×.
+- **Quantization does not change the offline prediction error** (0.785–0.790 in every
+  row). The base model's own error against the recorded actions is ~50× the
+  quantization error. This is an offline metric, not task success, which needs a robot
+  or a simulator with a fine-tuned checkpoint.
+
+### Asynchronous action chunking (2026-10-02)
+
+`sapient act --simulate --hz H --seconds S --threshold T` runs a control loop at H Hz
+against the real policy (`AsyncActions` in `crates/sapient-generate/src/vla_async.rs`).
+At most one chunk is computed at a time; a new one is requested when at most T × 50
+actions remain queued. Chunks are aligned by **actions executed**, so actions the robot
+executed while a chunk was being computed are dropped from it; T = 0 is synchronous
+execution (wait for the chunk, run all 50). A stall is a control tick with no action
+(the robot holds still). Static scene, one camera, `fast`, 30–40 s per run.
+
+| Machine | Rate | Sync stalls (T = 0) | Async stalls | Async T |
+|---|---|---|---|---|
+| Apple M4 (0.60 s/chunk) | 30 Hz | 26.8% | **0.0%** | 0.5 |
+| Pi 5 (3.3 s/chunk) | 30 Hz | 63.7% | 72.8% | 0.9 |
+| Pi 5 | 15 Hz | 45.6% | 45.6% | 0.9 |
+| Pi 5 | 10 Hz | 37.1% | **22.7%** | 0.5 or 0.9 |
+| Pi 5 | 5 Hz | 18.6% | **0.0%** | 0.5 |
+
+Stalls are counted after the first chunk arrives. Inference time per chunk on the Pi:
+p50 3.28–3.33 s, p95 ≤ 3.35 s, max 3.36 s across all runs (spread under 3%); on the M4
+p50 604 ms, max 619 ms.
+
+Async only helps when a chunk lasts much longer than one inference: it re-plans while
+the robot moves, but every action executed during inference is dropped from the new
+chunk. At 30 Hz a 50-action chunk lasts 1.7 s, half the Pi's 3.3 s inference, so
+async keeps throwing away most of each chunk and is worse than waiting; use T = 0
+there. A Pi 5 runs SmolVLA without stalls at 5 Hz; an M4 at 30 Hz.
+
 ---
 
 ## Binary & deployment
