@@ -494,14 +494,6 @@ fn gemv_chunk(n: usize) -> usize {
     }
 }
 
-/// Q8_K-format activations for the Q4_K_R4 matmuls (ONE f32 scale per
-/// 256-element super-block + per-32 sums; integer-domain sub-scale combine —
-/// the pp512 activation-format rung, BENCHMARKS.md). **Default ON — measured
-/// a win on every platform** (decode: M4 qwen +6.3%, M4 llama +4.9%, Thor
-/// 14-core +22.7%, Pi 5 +3.9%; Thor prefill −12.7% TTFT) with real-model
-/// greedy verification passed (llama.cpp-precedented per-256 accuracy
-/// class). `SAPIENT_Q8K_ACT=0` reverts to the per-32 W4A8 format.
-#[cfg(target_arch = "aarch64")]
 /// Whether the quantized matmuls take the int8-activation SDOT/SMMLA paths:
 /// requires the `dotprod` CPU feature, and can be switched off with
 /// `SAPIENT_F32_ACT=1` to force the f32-activation reference kernels. That knob
@@ -519,6 +511,14 @@ fn int8_activations() -> bool {
         })
 }
 
+/// Q8_K-format activations for the Q4_K_R4 matmuls (ONE f32 scale per
+/// 256-element super-block + per-32 sums; integer-domain sub-scale combine —
+/// the pp512 activation-format rung, BENCHMARKS.md). **Default ON — measured
+/// a win on every platform** (decode: M4 qwen +6.3%, M4 llama +4.9%, Thor
+/// 14-core +22.7%, Pi 5 +3.9%; Thor prefill −12.7% TTFT) with real-model
+/// greedy verification passed (llama.cpp-precedented per-256 accuracy
+/// class). `SAPIENT_Q8K_ACT=0` reverts to the per-32 W4A8 format.
+#[cfg(target_arch = "aarch64")]
 fn q8k_activations() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();

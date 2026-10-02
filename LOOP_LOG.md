@@ -11,6 +11,11 @@ correctness regression and no other metric worse beyond noise. Noise on the M4 l
 is up to ~8% run to run, so decisions use interleaved A/B runs of the two binaries,
 not a diff of two result files.
 
+**Pre-push check (added iteration 3).** CI lints on x86 Linux; this Mac is ARM. Run
+`cargo clippy -p sapient-backends-cpu --all-targets --target x86_64-apple-darwin -- -D warnings`
+before pushing any change to the kernels — an ARM-only helper once left an x86-dead
+function and turned CI red.
+
 **Hardware the loop can use**
 
 | Target | State |
@@ -228,3 +233,8 @@ Add SmolVLM2-500M to `sapient see` (same Idefics3 family, larger SigLIP + SmolLM
 verify it against the existing vision gates, and record its encode / prefill latency and
 jitter with `scripts/bench_loop.py`. If the checkpoint needs architecture changes beyond
 configuration, log what and scope them.
+
+**CI note (iteration 3).** The first push failed Clippy on x86: inserting the
+`int8_activations` helper had separated `q8k_activations` from its
+`#[cfg(target_arch = "aarch64")]` attribute, leaving it dead code on x86. Fixed by
+restoring the attribute; an x86 Clippy pass is now part of the pre-push check above.
