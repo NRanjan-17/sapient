@@ -229,6 +229,29 @@ enum Commands {
         /// and coarser.
         #[arg(long)]
         steps: Option<usize>,
+
+        /// Instead of one chunk, run a control loop at `--hz` for `--seconds`
+        /// with asynchronous chunking (the next chunk is computed while the
+        /// current one executes) and report stalls and inference latency.
+        #[arg(long)]
+        simulate: bool,
+
+        /// Control rate for `--simulate`.
+        #[arg(long, default_value_t = 30.0)]
+        hz: f64,
+
+        /// Duration of `--simulate`.
+        #[arg(long, default_value_t = 30.0)]
+        seconds: f64,
+
+        /// Request the next chunk when at most this fraction of a chunk is
+        /// still queued (0 = only when empty, i.e. sequential).
+        #[arg(long, default_value_t = 0.5)]
+        threshold: f32,
+
+        /// How a new chunk combines with still-queued actions: latest | average.
+        #[arg(long, default_value = "latest")]
+        aggregate: String,
     },
 
     /// Synthesise speech from text with a TTS model (text-to-speech).
@@ -631,12 +654,42 @@ async fn dispatch(cli: Cli) -> Result<()> {
             precision,
             f32,
             steps,
+            simulate,
+            hz,
+            seconds,
+            threshold,
+            aggregate,
         } => {
             let precision: sapient_generate::VlaPrecision = if f32 {
                 sapient_generate::VlaPrecision::Exact
             } else {
                 precision.parse()?
             };
+            if simulate {
+                let aggregate = match aggregate.as_str() {
+                    "latest" => sapient_generate::Aggregate::Latest,
+                    "average" => sapient_generate::Aggregate::Average,
+                    other => anyhow::bail!("--aggregate must be latest or average, got {other:?}"),
+                };
+                let cfg = sapient_generate::AsyncConfig {
+                    threshold,
+                    aggregate,
+                    seed,
+                };
+                return act_simulate_command(
+                    &images,
+                    &task,
+                    state.as_deref(),
+                    &model,
+                    precision,
+                    steps,
+                    hz,
+                    seconds,
+                    cfg,
+                    json,
+                )
+                .await;
+            }
             act_command(
                 &images,
                 &task,
@@ -1822,6 +1875,131 @@ async fn see_command(
     Ok(())
 }
 
+/// Parse `--state a,b,c` (default: zeros of the policy's state size).
+fn parse_vla_state(state: Option<&str>, dim: usize) -> Result<Vec<f32>> {
+    match state {
+        Some(s) => s
+            .split(',')
+            .map(|v| v.trim().parse::<f32>())
+            .collect::<std::result::Result<_, _>>()
+            .with_context(|| format!("--state must be comma-separated numbers, got {s:?}")),
+        None => Ok(vec![0.0; dim]),
+    }
+}
+
+/// [`sapient_generate::VlaPipeline`] with a fixed number of flow-matching steps.
+struct StepsPolicy(sapient_generate::VlaPipeline, Option<usize>);
+
+impl sapient_generate::ChunkPolicy for StepsPolicy {
+    fn predict_chunk(
+        &self,
+        obs: &sapient_generate::Observation,
+        seed: u64,
+    ) -> Result<Vec<Vec<f32>>> {
+        let c = self
+            .0
+            .predict_steps(&obs.images, &obs.task, &obs.state, seed, self.1)?;
+        Ok((0..c.steps).map(|i| c.row(i).to_vec()).collect())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn act_simulate_command(
+    images: &[PathBuf],
+    task: &str,
+    state: Option<&str>,
+    model: &str,
+    precision: sapient_generate::VlaPrecision,
+    steps: Option<usize>,
+    hz: f64,
+    seconds: f64,
+    cfg: sapient_generate::AsyncConfig,
+    json: bool,
+) -> Result<()> {
+    if !(hz > 0.0 && seconds > 0.0) {
+        anyhow::bail!("--hz and --seconds must be positive");
+    }
+    let loading = ui::spinner(format!("loading {model}…"));
+    let vla = sapient_generate::VlaPipeline::from_pretrained_with(model, precision.quant()).await?;
+    ui::spinner_success(
+        loading,
+        format!("{model} ready ({} precision)", precision.as_str()),
+    );
+    let state = parse_vla_state(state, vla.state_dim())?;
+    let pixels = images
+        .iter()
+        .map(|p| vla.preprocess_image(p))
+        .collect::<Result<Vec<_>>>()?;
+    let chunk_len = vla.chunk_len();
+    let policy = std::sync::Arc::new(StepsPolicy(vla, steps));
+    let running = ui::spinner(format!(
+        "control loop at {hz} Hz for {seconds} s (threshold {})…",
+        cfg.threshold
+    ));
+    let task_owned = task.to_string();
+    let threshold = cfg.threshold;
+    let report = tokio::task::spawn_blocking(move || {
+        sapient_generate::simulate_async_actions(
+            policy,
+            chunk_len,
+            pixels,
+            &task_owned,
+            state,
+            hz,
+            seconds,
+            cfg,
+        )
+    })
+    .await??;
+    running.finish_and_clear();
+
+    let st = &report.stats;
+    let mut ms: Vec<f64> = st.latencies.iter().map(|d| d.as_secs_f64() * 1e3).collect();
+    ms.sort_by(|a, b| a.total_cmp(b));
+    let pct = |p: f64| -> f64 {
+        if ms.is_empty() {
+            0.0
+        } else {
+            ms[((ms.len() - 1) as f64 * p).round() as usize]
+        }
+    };
+    let mean = ms.iter().sum::<f64>() / ms.len().max(1) as f64;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "hz": hz, "seconds": seconds, "threshold": threshold,
+                "precision": precision.as_str(),
+                "ticks": st.ticks, "stalls": st.stalls, "startup_stalls": st.startup_stalls,
+                "steady_stall_rate": st.steady_stall_rate(),
+                "chunks": st.chunks, "dropped_actions": st.dropped,
+                "latency_ms": {"mean": mean, "p50": pct(0.5), "p95": pct(0.95), "max": pct(1.0)},
+                "latencies_ms": ms,
+            })
+        );
+    } else {
+        println!(
+            "{} ticks at {hz} Hz · {} chunks · stalls after start-up: {} of {} ({:.1}%) · \
+             start-up stalls: {}",
+            st.ticks,
+            st.chunks,
+            st.stalls - st.startup_stalls,
+            st.ticks - st.startup_stalls,
+            st.steady_stall_rate() * 100.0,
+            st.startup_stalls
+        );
+        println!(
+            "inference per chunk: mean {mean:.0} ms · p50 {:.0} · p95 {:.0} · max {:.0} · \
+             stale actions dropped: {}",
+            pct(0.5),
+            pct(0.95),
+            pct(1.0),
+            st.dropped
+        );
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn act_command(
     images: &[PathBuf],
@@ -1845,14 +2023,7 @@ async fn act_command(
         format!("{model} ready ({} precision)", precision.as_str()),
     );
 
-    let state: Vec<f32> = match state {
-        Some(s) => s
-            .split(',')
-            .map(|v| v.trim().parse::<f32>())
-            .collect::<std::result::Result<_, _>>()
-            .with_context(|| format!("--state must be comma-separated numbers, got {s:?}"))?,
-        None => vec![0.0; vla.state_dim()],
-    };
+    let state = parse_vla_state(state, vla.state_dim())?;
 
     let thinking = ui::spinner("predicting actions…");
     let images = images.to_vec();

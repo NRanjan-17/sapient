@@ -392,7 +392,10 @@ quantization error, so judge accuracy changes with
 `smolvla_quantized_error_over_observations` (eight observations, f32 engine as
 reference); `scripts/smolvla_bf16_yardstick.py` gives LeRobot's own bf16 deviation on
 the same observations. `tests/q8_gemm_bench.rs` in `sapient-backends-cpu` (ignored)
-measures the Q8_0 GEMM's throughput.
+measures the Q8_0 GEMM's throughput. On real data: run
+`scripts/smolvla_dataset_eval.py --out ~/.cache/sapient-bench/smolvla_so100.safetensors`
+once (downloads `lerobot/svla_so100_pickplace`, ~0.5 GB), then
+`cargo test -p sapient-generate --release --test vla_e2e smolvla_real -- --ignored --nocapture`.
 
 Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints a
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure

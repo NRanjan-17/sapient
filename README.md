@@ -170,16 +170,21 @@ curl localhost:11435/v1/actions -H 'Content-Type: application/json' -d '{
 `sapient act` runs [SmolVLA](https://huggingface.co/lerobot/smolvla_base) (450M), one
 50-action chunk per call. Three precisions (CPU, one camera):
 
-| `--precision` | Apple M4 | Raspberry Pi 5 | Action error (RMS) |
+| `--precision` | Apple M4 | Raspberry Pi 5 | Error vs LeRobot f32 (RMS) |
 |---|---|---|---|
-| `fast` (default, all 8-bit) | 0.6 s | 3.3 s | 0.009–0.013 |
-| `balanced` (8-bit action expert only) | 1.0 s | 5.9 s | 0.004 |
-| `exact` (f32) | 1.7 s | 11.9 s | matches LeRobot to 4e-6 |
+| `fast` (default, all 8-bit) | 0.6 s | 3.3 s | 0.019 |
+| `balanced` (8-bit action expert only) | 1.0 s | 5.9 s | 0.014 |
+| `exact` (f32) | 1.7 s | 11.9 s | 0.000002 |
 
-Error is the difference from the f32 result over eight synthetic observations, in
-normalized action units (typical action magnitude 0.36). LeRobot's own default
-precision (bf16) scores 0.005 on the same observations. Task success has not been
-measured. Details: `docs/BENCHMARKS.md`.
+Measured on 24 real frames from an SO-100 dataset (two cameras), in normalized action
+units where recorded actions have RMS 1.0. LeRobot's own default precision (bf16)
+scores 0.011. None of the modes changes the model's error against the recorded actions
+(0.79 in all cases). Task success has not been measured.
+
+`--simulate --hz 10` runs a control loop with asynchronous chunking (the next chunk is
+computed while the robot executes the current one) and reports how often the robot
+would wait: none at 30 Hz on an M4, none at 5 Hz on a Pi 5. Details:
+`docs/BENCHMARKS.md`.
 The base checkpoint is meant to be fine-tuned for a robot; it prints actions in the
 model's normalized space.
 

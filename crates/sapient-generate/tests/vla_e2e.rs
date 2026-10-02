@@ -113,3 +113,131 @@ async fn smolvla_pipeline_reproduces_reference_actions() {
     );
     assert!(q_err < 7e-2, "Q8_0 action error grew: {q_err}");
 }
+
+/// Sapient on REAL robot observations: 24 frames (two cameras, 480×640) from
+/// the SO-100 dataset `lerobot/svla_so100_pickplace`, against LeRobot's own
+/// f32 and bf16 outputs and the recorded actions. The file is written by
+/// `scripts/smolvla_dataset_eval.py` (not in the repo).
+///
+/// `SAPIENT_SMOLVLA_DATASET=<file>` (default
+/// `~/.cache/sapient-bench/smolvla_so100.safetensors`).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs lerobot/smolvla_base and the dataset file from scripts/smolvla_dataset_eval.py"]
+async fn smolvla_real_observations() {
+    use sapient_generate::VlaPrecision;
+    const DATASET_TASK: &str = "Pick up the cube and place it in the box.";
+    let path = std::env::var("SAPIENT_SMOLVLA_DATASET")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap())
+                .join(".cache/sapient-bench/smolvla_so100.safetensors")
+        });
+    let fx = sapient_io::load_safetensors(&path).expect("load dataset file");
+    let get = |name: &str| fx[name].to_f32_vec();
+    let n = (0..)
+        .take_while(|i| fx.contains_key(&format!("obs.{i}.gt")))
+        .count();
+    assert!(n > 0, "no observations in {path:?}");
+
+    let frame = |name: &str| -> image::RgbImage {
+        let t = &fx[name];
+        let d = t.shape().dims().to_vec(); // [H, W, 3]
+        let px: Vec<u8> = t.to_f32_vec().iter().map(|v| *v as u8).collect();
+        image::RgbImage::from_raw(d[1] as u32, d[0] as u32, px).unwrap()
+    };
+    let rms = |a: &[f32], b: &[f32]| -> f64 {
+        (a.iter()
+            .zip(b)
+            .map(|(x, y)| ((x - y) as f64).powi(2))
+            .sum::<f64>()
+            / a.len() as f64)
+            .sqrt()
+    };
+    let max_abs = |a: &[f32], b: &[f32]| {
+        a.iter()
+            .zip(b)
+            .fold(0.0f32, |m, (x, y)| m.max((x - y).abs()))
+    };
+    // First 6 dims of [50, 32] rows.
+    let trim =
+        |v: Vec<f32>| -> Vec<f32> { v.chunks_exact(32).flat_map(|r| r[..6].to_vec()).collect() };
+
+    let mut lerobot_f32 = Vec::new();
+    let mut lerobot_bf16 = Vec::new();
+    let mut gt = Vec::new();
+    for i in 0..n {
+        lerobot_f32.extend(trim(get(&format!("obs.{i}.lerobot_f32"))));
+        lerobot_bf16.extend(trim(get(&format!("obs.{i}.lerobot_bf16"))));
+        gt.extend(get(&format!("obs.{i}.gt")));
+    }
+    println!(
+        "{n} real observations · recorded action RMS {:.3} (dataset-normalized)",
+        rms(&gt, &vec![0.0; gt.len()])
+    );
+    println!(
+        "{:28} vs LeRobot f32: rms {:.3e} max {:.3e} · vs recorded: rms {:.3}",
+        "LeRobot bf16 (yardstick)",
+        rms(&lerobot_bf16, &lerobot_f32),
+        max_abs(&lerobot_bf16, &lerobot_f32),
+        rms(&lerobot_bf16, &gt)
+    );
+    println!(
+        "{:28} vs recorded: rms {:.3}",
+        "LeRobot f32",
+        rms(&lerobot_f32, &gt)
+    );
+
+    for precision in [
+        VlaPrecision::Exact,
+        VlaPrecision::Balanced,
+        VlaPrecision::Fast,
+    ] {
+        let vla = VlaPipeline::from_pretrained_with(SMOLVLA_REPO, precision.quant())
+            .await
+            .expect("load SmolVLA");
+        let want_ids: Vec<u32> = get("obs.0.lang").iter().map(|v| *v as u32).collect();
+        assert_eq!(
+            vla.tokenize(DATASET_TASK).unwrap(),
+            want_ids,
+            "tokenization"
+        );
+        let mut ours = Vec::new();
+        let mut total_ms = 0.0;
+        for i in 0..n {
+            let images = vec![
+                vla.preprocess_rgb(&frame(&format!("obs.{i}.top"))),
+                vla.preprocess_rgb(&frame(&format!("obs.{i}.wrist"))),
+            ];
+            let chunk = vla
+                .predict_with_noise(
+                    &images,
+                    DATASET_TASK,
+                    &get(&format!("obs.{i}.state")),
+                    &get(&format!("obs.{i}.noise")),
+                )
+                .unwrap();
+            total_ms += chunk.timing.total_ms;
+            ours.extend(chunk.actions);
+        }
+        let (r, m) = (rms(&ours, &lerobot_f32), max_abs(&ours, &lerobot_f32));
+        println!(
+            "{:28} vs LeRobot f32: rms {r:.3e} max {m:.3e} · vs recorded: rms {:.3} · {:.0} ms/chunk",
+            format!("Sapient {}", precision.as_str()),
+            rms(&ours, &gt),
+            total_ms / n as f64
+        );
+        // Guards: exact must reproduce LeRobot on real frames (the resize path
+        // and two cameras included); the quantized modes are bounded at 2× the
+        // values measured on 2026-10-02 (balanced 1.38e-2 / 0.166, fast
+        // 1.90e-2 / 0.157).
+        let (rms_tol, max_tol) = match precision {
+            VlaPrecision::Exact => (1e-4, 1e-3),
+            VlaPrecision::Balanced => (2.8e-2, 0.33),
+            VlaPrecision::Fast => (3.8e-2, 0.31),
+        };
+        assert!(
+            r <= rms_tol && m <= max_tol,
+            "{precision:?}: rms {r} max {m}"
+        );
+    }
+}
