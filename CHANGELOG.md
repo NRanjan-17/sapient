@@ -5,6 +5,29 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-03
+
+**Robot-policy results you can check, and a safer default.** SmolVLA running in
+Sapient's 8-bit modes completes as many LIBERO-Spatial tasks as LeRobot's f32
+reference (28/50 and 26/50 against 24/50, no measurable difference). A simulator test
+with inference delay showed that overlapping slow inference with execution stalls
+less but completes fewer tasks, so `sapient act --threshold auto` now runs one chunk
+at a time once inference takes more than half a chunk. On phones, large models load
+inside the iOS memory limit, and apps can download a model ahead of time with real
+progress.
+
+### 📱 Mobile: larger models, benchmarks and downloads
+
+- GGUF models are always memory-mapped on iOS and Android, BF16 checkpoints are
+  converted to 8-bit one tensor at a time, the wgpu engine frees each layer after
+  uploading it, and models above 1.5B parameters get a 3072-token context window on
+  phones (`context_length` overrides). Estimated peak for SmolLM2-1.7B: about 7 GB →
+  2.9 GB; not yet measured on a device.
+- New in the Swift/Kotlin API (`sapient-ffi`): `benchmark`, memory footprint and
+  available-memory readings, `load_time_ms`, `context_length`, and `download_model`
+  with byte progress and cancel. A downloaded model then loads with no network.
+- Fix: a benchmark or raw completion between two chat turns garbled the next reply.
+
 ### 🤖 `sapient act`: safer automatic chunk requests
 
 - `--threshold auto` now runs synchronously whenever inference takes more than half

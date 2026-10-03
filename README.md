@@ -446,7 +446,7 @@ repositories {
 }
 // app/build.gradle.kts — JNA + kotlinx-coroutines arrive as transitive deps:
 dependencies {
-    implementation("so.openhorizon:sapient:0.6.2")
+    implementation("so.openhorizon:sapient:0.6.3")
 }
 ```
 
