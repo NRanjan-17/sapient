@@ -496,7 +496,8 @@ Apps can also download a model ahead of time without loading it:
 `download_model(model, listener)` fetches exactly the files a later `load` uses (and a GGUF
 model's separately hosted tokenizer), reporting bytes received against the total from
 `model_download_size`, so the model then loads with no network and the app can show a real
-progress bar.
+progress bar. Progress is the bytes actually written to the cache (the downloader pre-sizes
+its partial files, so their length would read 100 % at once), kept monotonic.
 
 For apps that need to know how a model performs on the actual phone, `LlmSession` also has
 `benchmark(options, listener)`: greedy timed runs on the loaded model returning decode and
