@@ -236,7 +236,7 @@ impl ForwardEngine {
                     // detected by config, not ArchType (a Mixtral safetensors repo
                     // is ArchType::Mixtral, but a Qwen-MoE one is ArchType::Qwen).
                     if info.is_moe() {
-                        let weights = crate::weights::load_hf_weights(weight_paths)?;
+                        let weights = crate::weights::load_hf_weights_quantized(weight_paths)?;
                         return Self::build_moe_cpu(info, weights, backend);
                     }
                     // wgpu when explicitly requested or auto-selected on a -gpu build
@@ -427,7 +427,7 @@ impl ForwardEngine {
     fn build_wgpu(info: ModelInfo, weight_paths: &[PathBuf]) -> Result<Self> {
         #[cfg(feature = "wgpu")]
         {
-            let weights = crate::weights::load_hf_weights(weight_paths)?;
+            let weights = crate::weights::load_hf_weights_quantized(weight_paths)?;
             Self::build_wgpu_from_weights(info, weights)
         }
         #[cfg(not(feature = "wgpu"))]

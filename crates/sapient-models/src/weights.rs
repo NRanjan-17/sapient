@@ -12,9 +12,36 @@ use sapient_io::SafetensorsLoader;
 
 /// Load and merge safetensors shards from disk.
 pub fn load_hf_weights(paths: &[PathBuf]) -> Result<HashMap<String, Tensor>> {
+    load_hf_weights_map(paths, |_, t| t)
+}
+
+/// Load and merge safetensors shards, quantizing each F16/BF16 linear weight
+/// to Q8_0 as it is read (the same `should_quantize_online` rule and
+/// `quantize_tensor_to_q8_0` call the engines apply after loading, so the
+/// result is byte-identical and their own pass becomes a no-op).
+///
+/// The difference is peak memory: the whole BF16 checkpoint never sits in
+/// memory next to its Q8_0 copy. For SmolLM2-1.7B that is ~1.8 GB instead of
+/// 3.4 GB + 1.8 GB, which decides whether it loads under a phone's per-app
+/// limit at all.
+pub fn load_hf_weights_quantized(paths: &[PathBuf]) -> Result<HashMap<String, Tensor>> {
+    use crate::forward::common::{quantize_tensor_to_q8_0, should_quantize_online};
+    load_hf_weights_map(paths, |name, t| {
+        if should_quantize_online(name, &t) {
+            quantize_tensor_to_q8_0(t)
+        } else {
+            t
+        }
+    })
+}
+
+fn load_hf_weights_map<F>(paths: &[PathBuf], mut transform: F) -> Result<HashMap<String, Tensor>>
+where
+    F: FnMut(&str, Tensor) -> Tensor,
+{
     let mut merged = HashMap::new();
     for path in paths {
-        let shard = SafetensorsLoader::load(path)
+        let shard = SafetensorsLoader::load_map(path, &mut transform)
             .with_context(|| format!("failed to load weights from {}", path.display()))?;
         for (k, v) in shard {
             if merged.insert(k.clone(), v).is_some() {
@@ -131,5 +158,81 @@ mod tests {
             Tensor::zeros(vec![1, 1], sapient_core::DType::F32).unwrap(),
         );
         assert_eq!(detect_weight_prefix(&w), "model.text_model.");
+    }
+
+    /// Writes a minimal BF16 safetensors file: one quantizable linear weight,
+    /// one norm and one embedding table (the last two must stay BF16).
+    fn write_bf16_checkpoint(path: &std::path::Path) {
+        let tensors: [(&str, [usize; 2]); 3] = [
+            ("model.layers.0.self_attn.q_proj.weight", [64, 96]),
+            ("model.layers.0.input_layernorm.weight", [1, 64]),
+            ("model.embed_tokens.weight", [40, 64]),
+        ];
+        let mut header = serde_json::Map::new();
+        let mut data = Vec::new();
+        for (i, (name, shape)) in tensors.iter().enumerate() {
+            let start = data.len();
+            for j in 0..shape[0] * shape[1] {
+                // Deterministic, varied values; BF16 = the top half of an f32.
+                let v = ((j * 37 + i * 11) % 251) as f32 / 97.0 - 1.3;
+                data.extend_from_slice(&((v.to_bits() >> 16) as u16).to_le_bytes());
+            }
+            header.insert(
+                (*name).into(),
+                serde_json::json!({ "dtype": "BF16", "shape": shape, "data_offsets": [start, data.len()] }),
+            );
+        }
+        let header = serde_json::to_vec(&header).unwrap();
+        let mut file = (header.len() as u64).to_le_bytes().to_vec();
+        file.extend_from_slice(&header);
+        file.extend_from_slice(&data);
+        std::fs::write(path, file).unwrap();
+    }
+
+    #[test]
+    fn quantized_load_is_byte_identical_to_load_then_quantize() {
+        use crate::forward::common::{quantize_tensor_to_q8_0, should_quantize_online};
+        let path = std::env::temp_dir().join(format!(
+            "sapient-q8-load-{}.safetensors",
+            std::process::id()
+        ));
+        write_bf16_checkpoint(&path);
+        let paths = vec![path.clone()];
+
+        // What the engines do today: load everything, then quantize.
+        let reference: HashMap<String, Tensor> = load_hf_weights(&paths)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| {
+                let v = if should_quantize_online(&k, &v) {
+                    quantize_tensor_to_q8_0(v)
+                } else {
+                    v
+                };
+                (k, v)
+            })
+            .collect();
+        let streamed = load_hf_weights_quantized(&paths).unwrap();
+        std::fs::remove_file(&path).ok();
+
+        assert_eq!(reference.len(), streamed.len());
+        for (name, want) in &reference {
+            let got = &streamed[name];
+            assert_eq!(got.dtype(), want.dtype(), "{name}");
+            assert_eq!(got.shape().dims(), want.shape().dims(), "{name}");
+            assert_eq!(got.as_bytes(), want.as_bytes(), "{name}");
+        }
+        assert_eq!(
+            streamed["model.layers.0.self_attn.q_proj.weight"].dtype(),
+            sapient_core::DType::Q8_0
+        );
+        assert_eq!(
+            streamed["model.embed_tokens.weight"].dtype(),
+            sapient_core::DType::BF16
+        );
+        assert_eq!(
+            streamed["model.layers.0.input_layernorm.weight"].dtype(),
+            sapient_core::DType::BF16
+        );
     }
 }

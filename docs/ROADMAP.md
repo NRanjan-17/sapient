@@ -431,6 +431,30 @@ napi/JSI over the FFI crate next). Full build/use/testing guide (including the
   kernel project. iOS forbids background GPU — the sample app stops
   generation on `scenePhase != .active`. Physical-device measurements are
   the user-driven ladder-rung-4 step.
+- [x] **Download-only + progress** (2026-10-02) — `download_model` /
+  `model_download_size` FFI exports (`Pipeline::download_only`): same files
+  as `load`, GGUF tokenizer prefetched (offline load afterwards), byte
+  progress, cancel. Fixed on the way: `repo_total_bytes` was always 0 (HF API
+  needs `?blobs=true` for sizes — `sapient pull` never had a real %), and the
+  blobs/cache paths ignored `HF_HOME` (wrong folder on iOS, none on Android).
+  Loads now work offline for downloaded models: weight resolution falls
+  back to the cached snapshot when the Hub listing request fails.
+- [x] **On-device memory fixes + benchmark API** (2026-10-02) — a SmolLM2-1.7B
+  load was killed by iOS jetsam (`EXC_RESOURCE … high watermark`, 3376 MB
+  limit). Causes and fixes: the RAM probe had no iOS branch so GGUF never
+  mmap'd (now: phones always mmap; probe uses `os_proc_available_memory`,
+  Android reads `/proc/meminfo`); safetensors BF16 was copied whole onto the
+  heap before Q8_0 conversion (now quantized per tensor inside the loader,
+  byte-identical); wgpu kept every host tensor until all layers uploaded (now
+  freed per layer); KV sized for 8192 (now 3072 on phones for models above
+  1.5B, `context_length` overrides). Estimated BF16 1.7B peak ~7 → ~2.9 GB —
+  **device measurement pending** (that's what the new benchmark is for).
+  FFI: `benchmark`/`benchmark_async` + `BenchmarkListener`, memory readings,
+  `load_time_ms`/`context_length`. Found + fixed on the way: KV-cache resets
+  outside the prefix-cache path left a stale `last_prompt`, so a benchmark
+  (or raw completion) between chat turns garbled the next reply.
+  Next: measure on device; an int8 KV cache for the wgpu engine would halve
+  the remaining KV cost.
 - [x] **React Native on-device** (2026-07-12) — `sdks/react-native`
   (`@openhorizon-labs/sapient-react-native`): **uniffi-bindgen-react-native**
   (ubrn 0.29.3-1, pinned in lockstep with `uniffi = "=0.29.3"` — a mismatch

@@ -93,7 +93,9 @@ Generated names are idiomatic per language (`chat_stream` → `chatStream`).
   `GenerationOptions`: `maxTokens` (512), `temperature`/`topP`/`topK`/
   `repetitionPenalty` (all unset → greedy), `systemPrompt`, `backend`
   (`auto`|`cpu`|`metal`|`wgpu`; the packaged mobile libs compile wgpu in, so
-  `auto` = GPU when an adapter exists, CPU otherwise — see §6).
+  `auto` = GPU when an adapter exists, CPU otherwise — see §6),
+  `contextLength` (KV-cache window in tokens; unset = 8192, or **3072 for
+  models above 1.5B on iOS/Android** — see §5.2).
 - `set_thermal_level(level)` / `thermal_level()` — feed the OS thermal signal
   into the engine (`nominal`/`fair`/`serious`/`critical`); decode threads
   shed as pressure rises. Wiring recipes in §7.
@@ -102,7 +104,22 @@ Generated names are idiomatic per language (`chat_stream` → `chatStream`).
   `listener.onToken(token) -> Bool`, return `false` to cancel. Returns the
   full (possibly partial-on-cancel) reply.
 - `session.reset()` / `session.transcript()` / `session.model()` /
-  `session.backendLabel()` / `session.isMmap()`.
+  `session.backendLabel()` / `session.isMmap()` / `session.loadTimeMs()` /
+  `session.contextLength()` (the window actually allocated).
+- `memory_footprint_bytes()` / `peak_memory_footprint_bytes()` /
+  `available_memory_bytes()` — the process footprint the OS enforces its
+  limit against (iOS `phys_footprint`, Linux/Android RSS), its peak, and the
+  remaining allowance (iOS `os_proc_available_memory`; `nil` on the
+  simulator, which has no limit). Check `available` before loading big models.
+- `download_model(model, listener?)` (async) — download without loading,
+  so the model later loads offline (GGUF tokenizers included);
+  `DownloadListener.onProgress(downloadedBytes, totalBytes) -> Bool` (~4×/s,
+  return `false` to cancel → `SapientError.cancelled`; partial files resume).
+  `model_download_size(model)` (async) — bytes to fetch, for "1.06 GB to
+  download" before starting.
+- `session.benchmark(options, listener?) -> BenchmarkReport` (+
+  `benchmarkAsync`) — on-device tok/s, TTFT, prefill rate and peak memory
+  with the same definitions as `sapient bench-llm`. See §5.7.
 
 ## 4. Build & packaging
 
@@ -327,11 +344,23 @@ lower in the background. Android's LMK behaves similarly under pressure.
   ten minutes downloading on the device's flash and then get jetsam-killed at
   load. Do the math first: model file size + ~1 GB working set must stay
   under half the device's RAM.
-- The engine's own guards help: GGUF loads mmap-backed when the file is large
-  relative to free RAM (weights stay evictable page-cache, not heap), and the
-  KV cache is capped at 8192 positions. **Set `SAPIENT_CTX=1024` (env) on
-  phones** to shrink the KV allocation further — long contexts are a desktop
-  luxury.
+- The engine's own guards (iOS/Android builds):
+  - **GGUF is always memory-mapped on phones.** Clean mapped file pages don't
+    count toward the per-app limit; the heap loader peaked at ~2× the file.
+    (Before 2026-10, iOS never mapped: its RAM probe returned 0.)
+  - **Safetensors checkpoints are quantized to Q8_0 one tensor at a time while
+    loading**, so a BF16 checkpoint never sits in memory next to its Q8_0
+    copy (byte-identical result), and the wgpu engine frees each layer's host
+    copy as soon as it is on the GPU.
+  - **KV cache: 8192 positions, or 3072 for models above 1.5B** non-embedding
+    parameters (Qwen2.5-1.5B stays at 8192; SmolLM2-1.7B gets 3072 — it has
+    no grouped-query attention, so its f16 cache is 1.61 GB at 8192 vs
+    0.60 GB at 3072). Override per session with
+    `GenerationOptions.contextLength`, or `SAPIENT_CTX` (env).
+  - Estimated peaks on a 3.38 GB-limit iPhone, wgpu, **not yet measured on a
+    device**: `smollm2-1.7b-q4` ~1.8 GB, `smollm2-1.7b` (BF16 → Q8_0) ~2.9 GB
+    (was ~7 GB → jetsam). Prefer the Q4 build on phones: a third of the
+    download and the memory. Measure yours with `session.benchmark` (§5.7).
 - Watch real memory in Xcode's memory gauge / Instruments (Allocations) or
   `adb shell dumpsys meminfo <pkg>`. If RSS approaches half of RAM, stop and
   shrink the model or context — don't "try once more".
@@ -396,6 +425,26 @@ and Android today**, so during development *you* are the governor:
 - If a device ever behaves oddly after a run (heat, battery drain, UI lag),
   stop testing on it, let it cool, and move that day's work back down the
   ladder.
+
+### 5.7 Benchmarking on a device
+
+`session.benchmark(BenchmarkOptions(maxTokens: 128, runs: 3, warmup: 1))`
+runs greedy generations on the already-loaded model (no second copy in
+memory) and returns a `BenchmarkReport`: per-run TTFT, decode and prefill
+tok/s, footprint after each run, the summary (mean/min/max), the process's
+peak footprint (model load included), thermal state at start and end, the
+backend label, mmap flag and context window. Definitions match
+`sapient bench-llm` exactly (shared code: `sapient_generate::bench`):
+decode tok/s = `(tokens − 1) / (t_last − t_first)`, warm-up runs excluded.
+
+- The optional `BenchmarkListener.onRun(run, completed, total) -> Bool` reports
+  progress; return `false` to stop after the current run (`report.cancelled`).
+- Chat history is untouched. The benchmark overwrites the engine's KV cache,
+  so the next chat turn re-prefills its history (correctly — a test pins it).
+- Simulator numbers measure your Mac, not a phone. Real numbers need a
+  device, a cool start (`thermal_start == nominal`) and the §5.1 rules.
+- Use a prompt that asks for a long answer; a run that ends on end-of-turn
+  early (`hitEos`) measures fewer tokens.
 
 ## 6. GPU on-device (wgpu: Metal on iOS, Vulkan on Android)
 
@@ -515,7 +564,7 @@ fair/serious/critical on a physical iPhone to test all of this.
 | iOS link fails: `___chkstk_darwin` undefined | Missing `IPHONEOS_DEPLOYMENT_TARGET=14.0` — C deps compiled against the SDK default while rustc linked at iOS 10. |
 | Android build: `esaxx-rs … ToolNotFound clang++` | Set `CXX_aarch64_linux_android` (the C++ compiler), not just `CC` — or use `cargo-ndk`. |
 | First `load()` extremely slow | It's downloading the model. Ship progress UI; pre-warm on Wi-Fi; cache per §5.4. |
-| App killed during `load()` on device | Jetsam/LMK — model too big for the device (§5.2). Smaller quant, `SAPIENT_CTX=1024`. |
+| App killed during `load()` on device (`EXC_RESOURCE … high watermark memory limit exceeded`) | Jetsam/LMK — model too big for the device (§5.2). Check `available_memory_bytes()` first; prefer a Q4 GGUF; lower `GenerationOptions.contextLength`. Engines from before 2026-10 also copied GGUF/BF16 weights onto the heap on iOS — update. |
 | `chatStream()` throws "not streamable" in React Native | RN's fetch can't stream — pass `expo/fetch` in `ClientOptions.fetch`, or use `chat()`. |
 | UI freezes during generation | You called the blocking API on the main thread. Background queue / `Dispatchers.IO` / worker. |
 | Kotlin bindgen warning "ktlint not found" | Cosmetic — the generated `.kt` is valid, just unformatted. |

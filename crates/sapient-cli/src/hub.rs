@@ -77,8 +77,8 @@ pub fn pick_graph_weight(files: &ModelFiles) -> Result<PathBuf> {
 
 /// Root of the shared HuggingFace Hub model cache (`~/.cache/huggingface/hub`).
 pub fn hub_cache_root() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    let hub_cache = home.join(".cache/huggingface/hub");
+    // Same directory HubClient downloads to (honours HF_HOME).
+    let hub_cache = sapient_hub::hub_cache_dir()?;
     hub_cache.is_dir().then_some(hub_cache)
 }
 

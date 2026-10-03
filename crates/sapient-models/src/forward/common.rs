@@ -24,15 +24,70 @@ fn map_err<T>(result: std::result::Result<T, SapientError>) -> Result<T> {
 /// conversations slide the window (see [`update_kv_cache`]).
 pub const DEFAULT_KV_CACHE_CTX: usize = 8192;
 
+/// KV-cache window for models above [`MOBILE_LARGE_MODEL_PARAMS`] on iOS and
+/// Android. Phone apps run under a per-process memory limit (~3.4 GB on a
+/// 6–8 GB iPhone), and a model without grouped-query attention pays for every
+/// position: SmolLM2-1.7B's f16 cache is 1.61 GB at 8192 positions vs
+/// 0.60 GB at 3072.
+pub const MOBILE_LARGE_MODEL_KV_CACHE_CTX: usize = 3072;
+
+/// Size above which [`MOBILE_LARGE_MODEL_KV_CACHE_CTX`] applies, compared with
+/// [`sapient_hub::model_info::ModelInfo::non_embedding_params`] (so Qwen2.5-1.5B, ~1.31B there, keeps
+/// the full default).
+pub const MOBILE_LARGE_MODEL_PARAMS: u64 = 1_500_000_000;
+
+/// True when compiled for a phone OS.
+pub const IS_MOBILE: bool = cfg!(any(target_os = "ios", target_os = "android"));
+
 /// Resolve the KV-cache context window: `min(model_max, cap)`, where `cap`
 /// defaults to [`DEFAULT_KV_CACHE_CTX`] and can be overridden (up to the model
 /// maximum) via the `SAPIENT_CTX` environment variable.
+///
+/// Engines call [`kv_cache_ctx_for`], which also honours a per-load request
+/// and the mobile default; this is the model-agnostic form.
 pub fn kv_cache_ctx(model_max: usize) -> usize {
-    let cap = std::env::var("SAPIENT_CTX")
+    resolve_kv_cache_ctx(model_max, None, env_kv_cache_ctx(), false, 0)
+}
+
+/// The KV-cache window an engine allocates for `info`. Precedence: the
+/// caller's `LoadOptions::context_length` (`info.kv_ctx_cap`), then
+/// `SAPIENT_CTX`, then [`MOBILE_LARGE_MODEL_KV_CACHE_CTX`] for large models
+/// on a phone, then [`DEFAULT_KV_CACHE_CTX`]; never above the model maximum.
+pub fn kv_cache_ctx_for(info: &sapient_hub::model_info::ModelInfo) -> usize {
+    resolve_kv_cache_ctx(
+        info.max_position_embeddings,
+        info.kv_ctx_cap,
+        env_kv_cache_ctx(),
+        IS_MOBILE,
+        info.non_embedding_params(),
+    )
+}
+
+fn env_kv_cache_ctx() -> Option<usize> {
+    std::env::var("SAPIENT_CTX")
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
+}
+
+/// Pure policy behind [`kv_cache_ctx_for`], with every input explicit so each
+/// platform's behaviour is testable on any host.
+pub fn resolve_kv_cache_ctx(
+    model_max: usize,
+    requested: Option<usize>,
+    env: Option<usize>,
+    mobile: bool,
+    non_embedding_params: u64,
+) -> usize {
+    let cap = requested
         .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_KV_CACHE_CTX);
+        .or(env.filter(|&v| v > 0))
+        .unwrap_or(
+            if mobile && non_embedding_params > MOBILE_LARGE_MODEL_PARAMS {
+                MOBILE_LARGE_MODEL_KV_CACHE_CTX
+            } else {
+                DEFAULT_KV_CACHE_CTX
+            },
+        );
     model_max.min(cap).max(1)
 }
 
@@ -703,6 +758,59 @@ pub fn mean_pool_hidden(hidden: &Tensor) -> Result<Vec<f32>> {
 mod tests {
     use super::*;
     use sapient_core::DType;
+
+    const SMOLLM2_1_7B: u64 = 1_610_612_736;
+    const QWEN2_5_1_5B: u64 = 1_310_195_712;
+
+    #[test]
+    fn kv_ctx_default_is_unchanged_off_mobile() {
+        assert_eq!(
+            resolve_kv_cache_ctx(8192, None, None, false, SMOLLM2_1_7B),
+            8192
+        );
+        assert_eq!(
+            resolve_kv_cache_ctx(131_072, None, None, false, 0),
+            DEFAULT_KV_CACHE_CTX
+        );
+    }
+
+    #[test]
+    fn kv_ctx_mobile_caps_only_models_above_1_5b() {
+        assert_eq!(
+            resolve_kv_cache_ctx(8192, None, None, true, SMOLLM2_1_7B),
+            MOBILE_LARGE_MODEL_KV_CACHE_CTX
+        );
+        assert_eq!(
+            resolve_kv_cache_ctx(32_768, None, None, true, QWEN2_5_1_5B),
+            8192
+        );
+        // Never above what the model supports.
+        assert_eq!(
+            resolve_kv_cache_ctx(2048, None, None, true, SMOLLM2_1_7B),
+            2048
+        );
+    }
+
+    #[test]
+    fn kv_ctx_request_beats_env_beats_default() {
+        assert_eq!(
+            resolve_kv_cache_ctx(8192, Some(1024), Some(4096), true, SMOLLM2_1_7B),
+            1024
+        );
+        assert_eq!(
+            resolve_kv_cache_ctx(8192, None, Some(4096), true, SMOLLM2_1_7B),
+            4096
+        );
+        // Zero means "unset", not a zero-length cache.
+        assert_eq!(
+            resolve_kv_cache_ctx(8192, Some(0), Some(0), true, SMOLLM2_1_7B),
+            MOBILE_LARGE_MODEL_KV_CACHE_CTX
+        );
+        assert_eq!(
+            resolve_kv_cache_ctx(8192, Some(16_384), None, false, 0),
+            8192
+        );
+    }
 
     /// Row-wise embedding gather must be bit-identical to slicing rows out of a
     /// full-table dequant — for every table dtype the GGUF/safetensors paths

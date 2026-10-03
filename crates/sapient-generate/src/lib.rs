@@ -43,10 +43,12 @@
 //! }
 //! ```
 
+pub mod bench;
 pub mod converse;
 pub mod device;
 pub mod kokoro_tts;
 pub mod kv_cache;
+pub mod memory;
 pub mod pipeline;
 pub mod sampler;
 pub mod sentence;

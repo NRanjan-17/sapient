@@ -338,7 +338,9 @@ Run serially (`--test-threads=1`) when multiple tests touch the same cached mode
 ### FFI and TypeScript SDK tests
 
 ```bash
-# sapient-ffi: unit tests, plus an ignored real-model e2e (downloads `smollm2-135m-q4`)
+# sapient-ffi: unit tests, plus ignored real-model e2e tests (download `smollm2-135m-q4`):
+# chat + stream, benchmark-between-chat-turns (pins the prefix-cache invariant), cancel,
+# download-only then load, download cancel
 cargo test -p sapient-ffi
 cargo test -p sapient-ffi --release -- --ignored
 
@@ -420,6 +422,13 @@ Profiling the vision tower: `SAPIENT_VISION_TIMING=1 sapient see <image>` prints
 per-stage breakdown (the audio equivalent is `SAPIENT_KOKORO_TIMING`). Measure
 kernel changes on a small-cache ARM board as well as an M-series Mac: a loop that
 is compute-bound in a Mac's L2 can be memory-bound on a Pi 5.
+
+**Touching a path that resets or overwrites the KV cache?** Call
+`Pipeline::forget_cached_prefix()` unless you record the new contents —
+otherwise the next prefix-cached chat turn reuses the wrong positions (see
+CLAUDE.md, sapient-ffi section). **Changing load-time memory behaviour?** Keep
+`weights::load_hf_weights_quantized` byte-identical to load-then-quantize
+(`quantized_load_is_byte_identical_to_load_then_quantize`).
 
 **Publishing a performance number?** Use `sapient bench-llm <alias | file.gguf> --json`
 (decode-only tok/s, warm-up excluded, real peak RSS) and commit its raw JSON — plus the

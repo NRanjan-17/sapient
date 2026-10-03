@@ -34,7 +34,7 @@ pub mod resolver;
 pub mod snac_config;
 pub mod whisper_config;
 
-pub use client::{HubClient, LoadOptions};
+pub use client::{dir_bytes, hub_cache_dir, HubClient, LoadOptions};
 pub use gguf::{gguf_split_shards, select_best_gguf, tokenizer_fallback_model};
 pub use model_info::{ArchType, ModelInfo};
 pub use registry::resolve_model_alias;

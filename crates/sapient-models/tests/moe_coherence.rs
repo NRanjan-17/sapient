@@ -80,6 +80,7 @@ fn base_info(moe: Option<MoeConfig>) -> ModelInfo {
         partial_rotary_factor: 1.0,
         head_dim: HEAD_DIM,
         moe,
+        kv_ctx_cap: None,
         raw: serde_json::Value::Null,
     }
 }
@@ -252,6 +253,7 @@ fn moe_q4k_identical_experts_matches_dense() {
         partial_rotary_factor: 1.0,
         head_dim: hd,
         moe,
+        kv_ctx_cap: None,
         raw: serde_json::Value::Null,
     };
 
