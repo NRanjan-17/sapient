@@ -114,21 +114,24 @@ impl std::fmt::Display for Threshold {
 /// * `d ≤ c/2`: asking just before the queue runs out (`q ≈ d`, plus a margin
 ///   for latency jitter) never stalls and computes the fewest chunks. Asking
 ///   earlier only burns more compute.
-/// * `c/2 < d < c`: no trigger avoids stalls; asking at once (any `q ≥ d`)
-///   settles into executing `c/2` actions per `d` ticks — stall fraction
-///   `1 − c/(2d)` — which beats synchronous execution's `d/(c+d)`.
-/// * `d ≥ c`: every async chunk loses more to the actions executed meanwhile
-///   than it gains; synchronous execution (`0`: ask only when empty) stalls
-///   least.
+/// * `d > c/2`: no trigger avoids stalls, and synchronous execution (`0`: ask
+///   only when empty) is chosen. For `c/2 < d < c` asking at once would stall
+///   less (`1 − c/(2d)` against `d/(c+d)`), but it completes fewer tasks: in
+///   LIBERO-Spatial with a simulated delay of 32 ticks and `c = 50`, immediate
+///   requests stalled 27% of ticks instead of 45% and succeeded in 4 of 30
+///   episodes instead of 14 (paired p = 0.006) — probably because each chunk
+///   then contributes only its late actions, planned from an observation `d`
+///   ticks old (not yet tested by an ablation). For
+///   `d ≥ c` asynchronous execution also stalls more. Pass a fixed
+///   `Threshold::Fraction` to trade success for fewer stalls.
 ///
-/// Measured on a Pi 5 (d = 33, 50, 99 ticks at 10, 15, 30 Hz, 40 s runs) the
-/// async stall rates matched these formulas within 2 points; synchronous ones
-/// came out 2.7–6 points lower, because a 40 s run holds only a few chunk
-/// cycles and ends mid-cycle. The ordering (which policy stalls less) matched
-/// at every rate.
+/// Measured on a Pi 5 (d = 17, 34, 50, 100 ticks at 5, 10, 15, 30 Hz; 120–300 s
+/// runs, at least 22 chunks each) both the synchronous and the immediate-request
+/// stall rates matched the formulas within one point. Earlier 40 s runs read the
+/// synchronous rate 2.7–6 points low because they held only 3–8 chunk cycles.
 pub fn auto_trigger(d: u64, c: usize) -> usize {
     let d = d as usize;
-    if d >= c {
+    if 2 * d > c {
         0
     } else {
         (d + d / 5 + 2).min(c)
@@ -600,9 +603,12 @@ mod tests {
         // Fast: just in time with a margin.
         assert_eq!(auto_trigger(10, 50), 14);
         assert_eq!(auto_trigger(0, 50), 2);
-        // Between c/2 and c: the trigger exceeds any queue left after arrival.
-        assert!(auto_trigger(33, 50) >= 50 - 33);
-        // Slower than a chunk: synchronous.
+        // Exactly half a chunk is still stall-free: ask at once.
+        assert!(auto_trigger(25, 50) >= 25);
+        // More than half a chunk: synchronous (asking at once would stall
+        // less but completes fewer tasks — see the doc comment).
+        assert_eq!(auto_trigger(26, 50), 0);
+        assert_eq!(auto_trigger(33, 50), 0);
         assert_eq!(auto_trigger(50, 50), 0);
         assert_eq!(auto_trigger(99, 50), 0);
         assert_eq!("auto".parse::<Threshold>().unwrap(), Threshold::Auto);

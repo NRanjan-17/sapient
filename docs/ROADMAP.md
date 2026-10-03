@@ -76,8 +76,13 @@
   `fast` RMS 0.019 vs LeRobot-bf16 0.011, offline prediction error unchanged by any
   mode; `AsyncActions` + `sapient act --simulate` — stall-free at 30 Hz on M4 and 5 Hz
   on Pi 5. **Task success (2026-10-03):** LIBERO-Spatial, `HuggingFaceVLA/smolvla_libero`:
-  LeRobot f32 24/50, Sapient `fast` 28/50, `balanced` 26/50 (paired p ≥ 0.29). Open VLA
-  rungs: simulated inference delay (sync vs async) in LIBERO, more suites, the
+  LeRobot f32 24/50, Sapient `fast` 28/50, `balanced` 26/50 (paired p ≥ 0.29). **Delay
+  (2026-10-03):** with a simulated 1.6 s delay (0.64 of a chunk) asynchronous requests
+  stalled less but succeeded 4/30 vs 14/30 synchronous, so `--threshold auto` now goes
+  synchronous above half a chunk; Pi 5 stall model re-measured with long runs, all
+  within 1 point. Open VLA rungs: blended/inpainted chunk switches (RTC-style) to
+  recover success between half and one chunk, the LIBERO checkpoint's latency on the
+  Pi, more suites, the
   expert's per-step overhead, jitter under load (latency-aware async threshold shipped:
   `--threshold auto` matches the best fixed setting at 5–30 Hz on M4 and Pi 5),
   asynchronous chunk execution, a real dataset and task success, a fine-tuned checkpoint

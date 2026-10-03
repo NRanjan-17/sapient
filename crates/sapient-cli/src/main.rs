@@ -244,9 +244,9 @@ enum Commands {
         seconds: f64,
 
         /// When to request the next chunk: `auto` (from measured latency —
-        /// just in time when inference is fast, synchronous when it is slower
-        /// than a chunk) or a fraction of a chunk still queued (0 = wait for
-        /// each chunk).
+        /// just in time when inference takes at most half a chunk, synchronous
+        /// when it takes longer) or a fraction of a chunk still queued (0 =
+        /// wait for each chunk).
         #[arg(long, default_value = "auto")]
         threshold: String,
 
