@@ -810,7 +810,10 @@ int8 (`SAPIENT_VLA_INT8_ATTN=0` turns that off for A/B timing).
 runs a control loop with asynchronous chunking (`AsyncActions` in
 `sapient-generate/src/vla_async.rs`; the robot loop calls `tick()` once per period and
 never blocks) and prints stalls and per-chunk latency. Real-data check:
-`scripts/smolvla_dataset_eval.py` → `smolvla_real_observations` in `vla_e2e.rs`. `sapient serve lerobot/smolvla_base` keeps the policy
+`scripts/smolvla_dataset_eval.py` → `smolvla_real_observations` in `vla_e2e.rs`.
+Task success: `scripts/vla_sim_eval.py` runs LIBERO episodes through LeRobot's env and
+processors with either LeRobot's PyTorch policy or `sapient serve` as the policy
+(`--parity` compares one chunk from each with identical noise). `sapient serve lerobot/smolvla_base` keeps the policy
 loaded behind `POST /v1/actions` (`handle_actions` in `server.rs`, its own LRU cache).
 `SAPIENT_VLA_TIMING=1` prints the denoising split (linear / attention / other).
 

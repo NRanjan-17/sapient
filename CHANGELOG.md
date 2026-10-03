@@ -5,6 +5,17 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 🤖 SmolVLA task success in a simulator
+
+- LIBERO-Spatial with the LIBERO-tuned SmolVLA (50 episodes each, identical noise):
+  LeRobot's f32 reference 24/50, Sapient `fast` 28/50, `balanced` 26/50 — no
+  measurable difference (paired p ≥ 0.29). `scripts/vla_sim_eval.py` reproduces it.
+- Fix: checkpoints whose normalization files use different step numbers (such as
+  `HuggingFaceVLA/smolvla_libero`) lost their action un-normalization. The file names
+  are now read from the checkpoint's processor configs.
+- `POST /v1/actions` accepts explicit start `noise` for exact comparison with other
+  implementations.
+
 ### 📖 Paste-safe docs
 
 - The README's GPU benchmark block started with an interactive `sapient chat`, so
