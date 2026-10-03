@@ -5,6 +5,15 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 📥 Download progress that tracks the download
+
+- `download_model` progress jumped to 100 % about a second into a fresh
+  download and stayed there: the downloader pre-sizes each partial file to
+  its full length, and progress was measured by file length. It now counts
+  the bytes actually written, never goes backwards, and ends at the total.
+- The download size of a split GGUF (e.g. GLM-4.5-Air, two files) now counts
+  every file.
+
 ### 🤖 SmolVLA task success in a simulator
 
 - LIBERO-Spatial with the LIBERO-tuned SmolVLA (50 episodes each, identical noise):

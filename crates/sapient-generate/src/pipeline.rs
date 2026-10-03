@@ -316,6 +316,14 @@ impl Pipeline {
         let total = hub.repo_total_bytes(model_id).await.unwrap_or(0);
         let blobs = HubClient::blobs_dir_for_model(model_id);
         let received = || blobs.as_deref().map(sapient_hub::dir_bytes).unwrap_or(0);
+        // Reported progress never goes backwards and stays below the total
+        // until the download has finished (on-disk counts can briefly
+        // overshoot, e.g. by the resume trailer of a part file).
+        let mut shown = 0u64;
+        let mut progress = move |bytes: u64| {
+            shown = shown.max(if total > 0 { bytes.min(total) } else { bytes });
+            shown
+        };
 
         let mut download = {
             let hub = Arc::clone(&hub);
@@ -331,7 +339,7 @@ impl Pipeline {
                         .with_context(|| format!("Failed to download model '{model_id}'"))?;
                 }
                 _ = tick.tick() => {
-                    if !on_progress(received(), total) {
+                    if !on_progress(progress(received()), total) {
                         download.abort();
                         return Err(DownloadCancelled.into());
                     }
@@ -362,8 +370,10 @@ impl Pipeline {
             .context("tokenizer download task failed")??;
         }
 
-        let done = received();
-        on_progress(done, total.max(done));
+        // Finished: report the full size (on-disk counts can read slightly
+        // low on compressing file systems).
+        let done = total.max(progress(received()));
+        on_progress(done, done);
         Ok(())
     }
 

@@ -601,6 +601,9 @@ sapient -v pull <model>
 When debugging Hub issues:
 
 - Check `~/.cache/huggingface/hub/` for partial downloads (`.sync.part`, `.lock`).
+- Test download progress from an empty cache — a cached model passes any progress check.
+  `HF_HOME=$(mktemp -d) cargo test -p sapient-ffi --release -- --ignored --nocapture e2e_download`.
+  Part files are pre-sized to their full length, so measure written bytes, not length.
 - Use `sapient reset --stale` to clear incomplete downloads.
 - Gated models require `sapient login` or `HF_TOKEN`.
 

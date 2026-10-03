@@ -437,6 +437,9 @@ napi/JSI over the FFI crate next). Full build/use/testing guide (including the
   progress, cancel. Fixed on the way: `repo_total_bytes` was always 0 (HF API
   needs `?blobs=true` for sizes — `sapient pull` never had a real %), and the
   blobs/cache paths ignored `HF_HOME` (wrong folder on iOS, none on Android).
+  2026-10-03: progress counted file LENGTH, and hf-hub pre-sizes part files,
+  so a fresh download read 100 % after one second; now counts written bytes,
+  monotonic, split-GGUF shards included in the total.
   Loads now work offline for downloaded models: weight resolution falls
   back to the cached snapshot when the Hub listing request fails.
 - [x] **On-device memory fixes + benchmark API** (2026-10-02) — a SmolLM2-1.7B

@@ -115,9 +115,15 @@ fn cached_repo_files(hub: &std::path::Path, repo_id: &str) -> Vec<String> {
     files
 }
 
-/// Total size of the regular files under `path` (0 if it doesn't exist).
+/// Bytes written to the regular files under `path` (0 if it doesn't exist).
 /// Symlinks are not followed, so a repo's `snapshots/` links don't double-count
 /// its `blobs/`.
+///
+/// Counts what is actually on disk, not file length: hf-hub's parallel
+/// download pre-sizes each `*.sync.part` file to its full length (plus an
+/// 8-byte resume trailer) before writing anything, so lengths read 100 %
+/// about a second into a download. The pre-sized file is sparse, so its
+/// allocated blocks track the bytes received.
 pub fn dir_bytes(path: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(path) else {
         return 0;
@@ -126,10 +132,31 @@ pub fn dir_bytes(path: &std::path::Path) -> u64 {
         .flatten()
         .map(|entry| match entry.file_type() {
             Ok(t) if t.is_dir() => dir_bytes(&entry.path()),
-            Ok(t) if t.is_file() => entry.metadata().map(|m| m.len()).unwrap_or(0),
+            Ok(t) if t.is_file() => entry.metadata().map(|m| written_bytes(&m)).unwrap_or(0),
             _ => 0,
         })
         .sum()
+}
+
+/// Bytes of a file that hold data: its length, or less for a sparse file
+/// whose allocated blocks don't cover it yet. On file systems without sparse
+/// files (or off Unix) this is the length.
+fn written_bytes(meta: &std::fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.len().min(meta.blocks().saturating_mul(512))
+    }
+    #[cfg(not(unix))]
+    {
+        meta.len()
+    }
+}
+
+/// Files a download of `repo_files` fetches for the GGUF `best`: every shard
+/// when it is a split GGUF (`-NNNNN-of-MMMMM.gguf`), else just `best`.
+fn gguf_download_set(best: &str) -> Vec<String> {
+    crate::gguf::gguf_split_shards(best).unwrap_or_else(|| vec![best.to_owned()])
 }
 
 // ── HubClient ─────────────────────────────────────────────────────────────────
@@ -274,10 +301,12 @@ impl HubClient {
             .filter(|n| n.ends_with(".gguf"))
             .collect();
         let total = if let Some(best) = crate::gguf::select_best_gguf(&gguf_names) {
-            // One selected GGUF + the small top-level metadata JSONs.
+            // The selected GGUF (all of its shards when split) + the small
+            // top-level metadata JSONs.
+            let gguf = gguf_download_set(best);
             files
                 .iter()
-                .filter(|(n, _)| n == best || (n.ends_with(".json") && !n.contains('/')))
+                .filter(|(n, _)| gguf.contains(n) || (n.ends_with(".json") && !n.contains('/')))
                 .map(|(_, sz)| sz)
                 .sum()
         } else {
@@ -607,5 +636,36 @@ mod tests {
             "the symlink is not counted again"
         );
         assert_eq!(dir_bytes(&root.path().join("missing")), 0);
+    }
+
+    /// hf-hub pre-sizes a download's part file to its full length before
+    /// writing; only the bytes written count as progress.
+    #[test]
+    #[cfg(unix)]
+    fn dir_bytes_counts_written_bytes_of_a_presized_file() {
+        use std::io::{Seek, SeekFrom, Write};
+        let root = tempfile::tempdir().unwrap();
+        let mut f = std::fs::File::create(root.path().join("x.sync.part")).unwrap();
+        f.set_len(64 << 20).unwrap();
+        f.seek(SeekFrom::Start(0)).unwrap();
+        f.write_all(&vec![7u8; 1 << 20]).unwrap();
+        f.sync_all().unwrap();
+        let n = dir_bytes(root.path());
+        assert!(
+            (1 << 20..8 << 20).contains(&n),
+            "a 64 MB pre-sized file with 1 MB written reads {n} bytes"
+        );
+    }
+
+    #[test]
+    fn split_gguf_counts_every_shard() {
+        assert_eq!(
+            gguf_download_set("Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf"),
+            vec![
+                "Q4_K_M/GLM-4.5-Air-Q4_K_M-00001-of-00002.gguf",
+                "Q4_K_M/GLM-4.5-Air-Q4_K_M-00002-of-00002.gguf"
+            ]
+        );
+        assert_eq!(gguf_download_set("m-Q4_K_M.gguf"), vec!["m-Q4_K_M.gguf"]);
     }
 }

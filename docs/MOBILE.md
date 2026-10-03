@@ -115,6 +115,9 @@ Generated names are idiomatic per language (`chat_stream` → `chatStream`).
   so the model later loads offline (GGUF tokenizers included);
   `DownloadListener.onProgress(downloadedBytes, totalBytes) -> Bool` (~4×/s,
   return `false` to cancel → `SapientError.cancelled`; partial files resume).
+  Progress counts bytes actually received, never goes backwards, and ends at
+  `(total, total)`. The callback runs on one of the engine's two runtime
+  threads, so keep it short (post to your UI thread, don't do work there).
   `model_download_size(model)` (async) — bytes to fetch, for "1.06 GB to
   download" before starting.
 - `session.benchmark(options, listener?) -> BenchmarkReport` (+
@@ -598,8 +601,8 @@ fair/serious/critical on a physical iPhone to test all of this.
    same `SapientClient` API, no server (React Native's JSI transport ✅
    shipped as `@openhorizon-labs/sapient-react-native`).
 5. **On-device niceties:** ~~thermal governor hooks~~ ✅ shipped
-   (`set_thermal_level`, §7); still open — download progress callbacks,
-   background-safe model eviction.
+   (`set_thermal_level`, §7); download progress ✅ shipped (`download_model`);
+   still open — background-safe model eviction.
 6. **Typed mid-stream errors:** promote the engine's in-band `Error: …`
    stream fragment to a typed error (`Result`-carrying stream in
    `sapient-generate` — shared with serve; flagged in the PR #38 review).
