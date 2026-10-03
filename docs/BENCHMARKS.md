@@ -1179,6 +1179,36 @@ wgpu remains slower than the CPU for Q4_K_M models on Apple Silicon; on non-Appl
 (its purpose) these kernels are untuned and unmeasured here. The `metal` 500 is now a
 startup error naming the reason (see CHANGELOG).
 
+### SmolVLA task success in LIBERO (2026-10-03)
+
+`HuggingFaceVLA/smolvla_libero` (32 language + 32 expert layers, two cameras) on
+LIBERO-Spatial, Apple M4 CPU: 10 tasks × 5 initial states, at most 280 steps, 10 actions
+executed per chunk. Observations go through LeRobot's own LIBERO wrapper and processors
+for every backend; only the policy changes. Each chunk of every backend starts from the
+same noise (seeded by task, episode and chunk index), so episodes pair up. Raw results:
+`benchmarks/2026-10-03-m4-libero-spatial-smolvla.jsonl`; harness:
+`scripts/vla_sim_eval.py`.
+
+| Configuration | Success | 95% CI | Same outcome as reference | McNemar p |
+|---|---|---|---|---|
+| LeRobot f32 (reference) | 24/50 | 35–61% | — | — |
+| Sapient `balanced` | 26/50 | 39–65% | 40/50 (4 lost, 6 gained) | 0.75 |
+| Sapient `fast` | 28/50 | 42–69% | 42/50 (2 lost, 6 gained) | 0.29 |
+
+Neither 8-bit configuration changes task success measurably. Successful episodes take
+103–105 steps on average in all three. On the first frame Sapient `exact` matches
+LeRobot's chunk to 6.6e-6 (max), `balanced` to RMS 1.8e-3, `fast` to RMS 1.1e-2.
+
+The absolute rate is below published SmolVLA LIBERO-Spatial results because this run
+executes 10 actions per chunk; the checkpoint re-plans after every action
+(`n_action_steps = 1`). That costs 10× more inference per episode, which this M4 run
+could not afford for three configurations. The comparison between engines holds; the
+absolute numbers are not comparable to published ones.
+
+Also on the M4: LeRobot's PyTorch f32 runs this 32-layer model at about 1.5 s per chunk,
+about the same as Sapient's 8-bit path (1.6 s), because PyTorch uses Apple's matrix
+hardware for f32 math. Sapient's latency advantage is on the Pi, not on Apple Silicon.
+
 ---
 
 ## Binary & deployment
