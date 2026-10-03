@@ -124,15 +124,45 @@ def observe(env_pre, raw, task):
     return env_pre(obs)
 
 
-def run_episode(env, env_pre, env_post, get_chunk, n_exec, episode, task_id):
+def auto_trigger(d: int, c: int) -> int:
+    """The stall-minimizing rule (asynchronous whenever d < c).
+
+    This is what `sapient act --threshold auto` did up to v0.6.2 and what the
+    `--mode auto` results in benchmarks/ were measured with. Those results are
+    why the engine's `auto_trigger` (vla_async.rs) now goes synchronous as soon
+    as d > c/2.
+    """
+    return 0 if d >= c else min(d + d // 5 + 2, c)
+
+
+def run_episode(env, env_pre, env_post, get_chunk, horizon, episode, task_id, delay=0, mode="sync"):
+    """One episode. Every chunk contributes at most `horizon` actions.
+
+    With `delay` d > 0, a chunk requested on tick t becomes usable on tick t + d
+    (the simulator does not pause for inference); meanwhile the robot executes
+    queued actions or, with none queued, holds its pose (zero motion, last gripper
+    command) — a stall, which counts against the episode's step limit. Chunks are
+    aligned by executed actions: the actions executed while a chunk was being
+    computed are dropped from it. `mode`: `sync` requests only when the queue is
+    empty; `auto` uses the latency rule of the paper / vla_async.rs.
+    """
     raw, _ = env.reset(seed=[episode])
     task = list(env.call("task_description"))[0]
     max_steps = env.call("_max_episode_steps")[0]
     queue: list[np.ndarray] = []
-    infer_s, n_infer, success, step = 0.0, 0, False, 0
+    executed = 0  # actions executed so far
+    pending = None  # (deliver_on_tick, executed_at_request, chunk)
+    trigger = 0 if mode == "sync" else auto_trigger(delay, horizon)
+    gripper = -1.0
+    infer_s, n_infer, success, step, stalls = 0.0, 0, False, 0, 0
     while step < max_steps:
-        obs = observe(env_pre, raw, task)
-        if not queue:
+        if pending is not None and step >= pending[0]:
+            _, at, chunk = pending
+            pending = None
+            usable = list(chunk[: horizon][max(0, executed - at) :])
+            queue = usable  # newest plan replaces any overlap
+        if pending is None and len(queue) <= trigger:
+            obs = observe(env_pre, raw, task)
             # Common random numbers: every backend gets the same start noise
             # for the same (task, episode, chunk), so differences in outcome
             # come from the engine, not from sampling luck.
@@ -142,8 +172,19 @@ def run_episode(env, env_pre, env_post, get_chunk, n_exec, episode, task_id):
             chunk = get_chunk(obs, task, noise)
             infer_s += time.perf_counter() - t
             n_infer += 1
-            queue = list(chunk[:n_exec])
-        action = torch.from_numpy(queue.pop(0))[None]
+            pending = (step + delay, executed, chunk)
+            if delay == 0:
+                pending = None
+                queue = list(chunk[:horizon])
+        if queue:
+            a = queue.pop(0)
+            executed += 1
+            gripper = float(a[-1])
+        else:
+            a = np.zeros(7, dtype=np.float32)
+            a[-1] = gripper
+            stalls += 1
+        action = torch.from_numpy(np.asarray(a, dtype=np.float32))[None]
         action = env_post({"action": action})["action"]
         raw, _, terminated, truncated, info = env.step(action.numpy())
         step += 1
@@ -154,7 +195,14 @@ def run_episode(env, env_pre, env_post, get_chunk, n_exec, episode, task_id):
             success = bool(np.asarray(info["is_success"])[0])
         if success or bool(np.asarray(terminated)[0]) or bool(np.asarray(truncated)[0]):
             break
-    return {"success": success, "steps": step, "inferences": n_infer, "infer_s": round(infer_s, 2), "task": task}
+    return {
+        "success": success,
+        "steps": step,
+        "stalls": stalls,
+        "inferences": n_infer,
+        "infer_s": round(infer_s, 2),
+        "task": task,
+    }
 
 
 def main() -> None:
@@ -166,7 +214,9 @@ def main() -> None:
     ap.add_argument("--suite", default="libero_spatial")
     ap.add_argument("--tasks", default="0-9", help="task ids, e.g. 0-9 or 0,3,5")
     ap.add_argument("--episodes", type=int, default=5, help="init states per task (0..N-1)")
-    ap.add_argument("--exec", type=int, default=10, help="actions executed per chunk")
+    ap.add_argument("--exec", type=int, default=10, help="actions executed per chunk (horizon c)")
+    ap.add_argument("--delay", type=int, default=0, help="simulated inference delay d in control ticks")
+    ap.add_argument("--mode", choices=["sync", "auto"], default="sync", help="request policy")
     ap.add_argument("--out", default="vla_sim_results.jsonl")
     ap.add_argument("--parity", action="store_true", help="compare one chunk from both backends")
     a = ap.parse_args()
@@ -195,6 +245,8 @@ def main() -> None:
         return
 
     label = "lerobot-f32" if a.backend == "lerobot" else f"sapient-{a.precision}"
+    if a.delay or a.mode != "sync":
+        label += f"-d{a.delay}-{a.mode}"
     done = set()
     if os.path.exists(a.out):
         for line in open(a.out):
@@ -221,20 +273,22 @@ def main() -> None:
                 env.reset(seed=[ep])
                 continue
             t = time.perf_counter()
-            r = run_episode(env, env_pre, env_post, get_chunk, a.exec, ep, tid)
+            r = run_episode(env, env_pre, env_post, get_chunk, a.exec, ep, tid, a.delay, a.mode)
             r.update(
                 config=label,
                 suite=a.suite,
                 task_id=tid,
                 episode=ep,
                 exec=a.exec,
+                delay=a.delay,
+                mode=a.mode,
                 wall_s=round(time.perf_counter() - t, 1),
             )
             with open(a.out, "a") as f:
                 f.write(json.dumps(r) + "\n")
             print(
                 f"{label} task {tid} ep {ep}: {'SUCCESS' if r['success'] else 'fail'} "
-                f"in {r['steps']} steps, {r['inferences']} chunks, {r['wall_s']} s",
+                f"in {r['steps']} steps ({r['stalls']} stalled), {r['inferences']} chunks, {r['wall_s']} s",
                 flush=True,
             )
         env.close()

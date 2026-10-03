@@ -5,6 +5,18 @@ section below as the GitHub release body.
 
 ## [Unreleased]
 
+### 🤖 `sapient act`: safer automatic chunk requests
+
+- `--threshold auto` now runs synchronously whenever inference takes more than half
+  a chunk. It used to stay asynchronous until inference took a whole chunk, which
+  stalls less but completes fewer tasks: in LIBERO-Spatial with a 1.6 s delay, 4 of
+  30 episodes succeeded against 14 of 30 for synchronous execution. Below half a
+  chunk nothing changes (no stalls, same success, faster episodes). A fixed
+  `--threshold` value still gives the old behaviour.
+- `scripts/vla_sim_eval.py --delay D --mode sync|auto` runs LIBERO with a simulated
+  inference delay. Results and the long-run check of the stall model on a
+  Raspberry Pi 5 (all eight points within 1 point) are in `docs/BENCHMARKS.md`.
+
 ### 📥 Download progress that tracks the download
 
 - `download_model` progress jumped to 100 % about a second into a fresh

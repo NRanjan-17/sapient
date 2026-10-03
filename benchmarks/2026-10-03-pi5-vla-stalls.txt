@@ -1,0 +1,56 @@
+### hz10-th0.log
+temp_before=temp=69.2'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+1900 ticks at 10 Hz · 23 chunks · stalls after start-up: 750 of 1866 (40.2%) · start-up stalls: 34
+inference per chunk: mean 3342 ms · p50 3324 · p95 3363 · max 3666 · stale actions dropped: 0
+threshold 0: last request at ≤ 0 queued actions (synchronous) · latency up to 37 ticks
+temp_after=temp=60.9'C
+### hz10-th1.log
+temp_before=temp=59.3'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+1900 ticks at 10 Hz · 55 chunks · stalls after start-up: 484 of 1867 (25.9%) · start-up stalls: 33
+inference per chunk: mean 3325 ms · p50 3326 · p95 3349 · max 3357 · stale actions dropped: 1350
+threshold 1: last request at ≤ 50 queued actions · latency up to 34 ticks
+temp_after=temp=70.3'C
+### hz15-th0.log
+temp_before=temp=68.6'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+2250 ticks at 15 Hz · 22 chunks · stalls after start-up: 1101 of 2201 (50.0%) · start-up stalls: 49
+inference per chunk: mean 3313 ms · p50 3314 · p95 3347 · max 3363 · stale actions dropped: 0
+threshold 0: last request at ≤ 0 queued actions (synchronous) · latency up to 51 ticks
+temp_after=temp=68.1'C
+### hz15-th1.log
+temp_before=temp=65.3'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+2250 ticks at 15 Hz · 44 chunks · stalls after start-up: 1101 of 2201 (50.0%) · start-up stalls: 49
+inference per chunk: mean 3306 ms · p50 3308 · p95 3342 · max 3348 · stale actions dropped: 1099
+threshold 1: last request at ≤ 50 queued actions · latency up to 51 ticks
+temp_after=temp=71.9'C
+### hz30-th0.log
+temp_before=temp=48.8'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+3600 ticks at 30 Hz · 24 chunks · stalls after start-up: 2301 of 3501 (65.7%) · start-up stalls: 99
+inference per chunk: mean 3291 ms · p50 3291 · p95 3323 · max 3326 · stale actions dropped: 0
+threshold 0: last request at ≤ 0 queued actions (synchronous) · latency up to 100 ticks
+temp_after=temp=68.6'C
+### hz30-th1.log
+temp_before=temp=63.1'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+3600 ticks at 30 Hz · 36 chunks · stalls after start-up: 2601 of 3501 (74.3%) · start-up stalls: 99
+inference per chunk: mean 3314 ms · p50 3314 · p95 3343 · max 3348 · stale actions dropped: 900
+threshold 1: last request at ≤ 50 queued actions · latency up to 101 ticks
+temp_after=temp=70.8'C
+### hz5-th0.log
+temp_before=temp=65.9'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+1500 ticks at 5 Hz · 23 chunks · stalls after start-up: 374 of 1483 (25.2%) · start-up stalls: 17
+inference per chunk: mean 3301 ms · p50 3294 · p95 3338 · max 3343 · stale actions dropped: 0
+threshold 0: last request at ≤ 0 queued actions (synchronous) · latency up to 17 ticks
+temp_after=temp=57.6'C
+### hz5-th1.log
+temp_before=temp=52.7'C
+✓ lerobot/smolvla_base ready (fast precision) (1.3s)
+1500 ticks at 5 Hz · 88 chunks · stalls after start-up: 0 of 1483 (0.0%) · start-up stalls: 17
+inference per chunk: mean 3292 ms · p50 3291 · p95 3326 · max 3338 · stale actions dropped: 1479
+threshold 1: last request at ≤ 50 queued actions · latency up to 17 ticks
+temp_after=temp=72.5'C

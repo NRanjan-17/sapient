@@ -826,7 +826,10 @@ int8 (`SAPIENT_VLA_INT8_ATTN=0` turns that off for A/B timing).
 `sapient act --simulate --hz 10 --seconds 30 [--threshold auto|0..1] [--aggregate latest|average]`
 runs a control loop with asynchronous chunking (`AsyncActions` in
 `sapient-generate/src/vla_async.rs`; the robot loop calls `tick()` once per period and
-never blocks) and prints stalls and per-chunk latency. Real-data check:
+never blocks) and prints stalls and per-chunk latency. `auto` asks just in time while
+inference takes at most half a chunk and runs synchronously above that
+(`auto_trigger`; the reason is a task-success measurement, see docs/BENCHMARKS.md).
+Real-data check:
 `scripts/smolvla_dataset_eval.py` → `smolvla_real_observations` in `vla_e2e.rs`.
 Task success: `scripts/vla_sim_eval.py` runs LIBERO episodes through LeRobot's env and
 processors with either LeRobot's PyTorch policy or `sapient serve` as the policy

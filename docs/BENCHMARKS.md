@@ -1222,6 +1222,70 @@ Also on the M4: LeRobot's PyTorch f32 runs this 32-layer model at about 1.5 s pe
 about the same as Sapient's 8-bit path (1.6 s), because PyTorch uses Apple's matrix
 hardware for f32 math. Sapient's latency advantage is on the Pi, not on Apple Silicon.
 
+### Stalls are not task success: LIBERO with simulated inference delay (2026-10-03)
+
+Same checkpoint, suite and noise protocol as the section above, policy `fast`, with an
+imposed delay: a chunk requested on tick t becomes usable on tick t + d, the simulator
+keeps running, and the robot holds its pose when nothing is queued (held ticks count
+against the 280-step limit). 10 tasks × 3 initial states per row. `sync` asks only when
+the queue is empty; `auto` here is the rule `sapient act` used up to v0.6.2
+(asynchronous whenever d < c). Raw results:
+`benchmarks/2026-10-03-m4-libero-spatial-delay.jsonl`; harness:
+`scripts/vla_sim_eval.py --exec C --delay D --mode sync|auto`. The delays are imposed,
+not measured: 12, 32 and 66 ticks are 0.6, 1.6 and 3.3 s at LIBERO's 20 Hz.
+
+| Chunk c | Delay d | d/c | Policy | Success | Ticks stalled | Steps when successful | p (auto vs sync) |
+|---|---|---|---|---|---|---|---|
+| 50 | 0 | 0 | — | 15/30 | 0% | 109 | |
+| 50 | 12 | 0.24 | sync | 15/30 | 22% | 136 | |
+| 50 | 12 | 0.24 | auto | 14/30 | 6% | 116 | 1.00 |
+| 50 | 32 | 0.64 | sync | 14/30 | 45% | 187 | |
+| 50 | 32 | 0.64 | auto | **4/30** | 27% | 139 | **0.006** |
+| 50 | 66 | 1.32 | sync | 4/30 | 64% | 211 | |
+| 25 | 0 | 0 | — | 17/30 | 0% | 100 | |
+| 25 | 12 | 0.48 | sync | 13/30 | 34% | 146 | |
+| 25 | 12 | 0.48 | auto | 10/30 | 5% | 118 | 0.51 |
+| 25 | 32 | 1.28 | sync | 15/30 | 58% | 231 | |
+
+p is McNemar's exact test on paired episodes.
+
+- **d ≤ c/4:** asynchronous execution keeps the success rate and is faster. On the 11
+  episodes both policies finish, it is quicker in all 11, by 17 steps on average.
+- **d = 0.64 c:** asynchronous execution stalls less, as the stall model predicts, and
+  succeeds in 4 of 30 episodes against 14 of 30. The likely cause, not tested by an
+  ablation: each chunk then contributes only its late actions, planned from an
+  observation d ticks old, with twice as many unblended plan switches.
+- **d = 0.48 c:** same direction, not significant (10/30 vs 13/30).
+- **Synchronous execution under delay** loses time before it loses success: 30 and 89
+  more steps at d = 12 and 32 with the success rate unchanged; 4/30 at d = 66, where
+  the episodes run out of steps. With c = 25 and d = 32 (58% stalled) success is 15/30,
+  so the cause is the step limit, not the ratio d/c.
+
+One suite, one checkpoint, 30 episodes per row: only the d = 0.64 c difference is
+statistically significant.
+
+**Consequence for the engine:** `--threshold auto` now goes synchronous as soon as
+inference takes more than half a chunk (it used to stay asynchronous up to a full
+chunk). A fixed `--threshold` still allows the old behaviour.
+
+### Stall model re-measured with long runs (Raspberry Pi 5, 2026-10-03)
+
+The 40-second runs in "Latency-aware request threshold" above held only 3–8 chunk
+cycles. Re-run for 120–300 s (22–88 chunks per run), SmolVLA base, `fast`, 3.29–3.34 s
+per chunk (95th percentile within 1.5% of the mean, board below 73 °C). Raw output:
+`benchmarks/2026-10-03-pi5-vla-stalls.txt` (binary: the v0.6.1-era build on the Pi).
+
+| Rate | Latency d | Sync: model d/(c+d) | Sync measured | Async (T = 1): model | Async measured |
+|---|---|---|---|---|---|
+| 30 Hz | 100 ticks | 66.7% | 65.7% | 75.0% | 74.3% |
+| 15 Hz | 50 | 50.0% | 50.0% | 50.0% | 50.0% |
+| 10 Hz | 34 | 40.5% | 40.2% | 26.5% | 25.9% |
+| 5 Hz | 17 | 25.4% | 25.2% | 0% | 0.0% |
+
+All eight are within one point of the model. The earlier statement that synchronous
+rates come out 2.7–6 points below the model was an effect of the short runs, not of
+the model.
+
 ---
 
 ## Binary & deployment

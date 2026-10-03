@@ -403,7 +403,10 @@ once (downloads `lerobot/svla_so100_pickplace`, ~0.5 GB), then
 `cargo test -p sapient-generate --release --test vla_e2e smolvla_real -- --ignored --nocapture`.
 For task success, see the header of `scripts/vla_sim_eval.py` (LIBERO on macOS needs a
 manual install of its dependencies). Run long evaluations under `caffeinate -is` and
-detached with `nohup`: the Mac's idle sleep stalls them.
+detached with `nohup`: the Mac's idle sleep stalls them. `--delay D --mode sync|auto`
+adds a simulated inference delay; a change to the request rule (`auto_trigger`) needs
+that comparison, because fewer stalls did not mean more completed tasks. Measure stall
+rates over at least 20 chunk cycles (short runs read synchronous stalls low).
 
 Profiling the wgpu engine: `SAPIENT_WGPU_TIMING=1 sapient chat <model> --backend wgpu -p "…"`
 prints CPU recording vs GPU time per token; `SAPIENT_WGPU_SHARED_PASS=0` reverts to one
