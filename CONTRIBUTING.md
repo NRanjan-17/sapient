@@ -399,6 +399,9 @@ measures the Q8_0 GEMM's throughput. On real data: run
 `scripts/smolvla_dataset_eval.py --out ~/.cache/sapient-bench/smolvla_so100.safetensors`
 once (downloads `lerobot/svla_so100_pickplace`, ~0.5 GB), then
 `cargo test -p sapient-generate --release --test vla_e2e smolvla_real -- --ignored --nocapture`.
+For task success, see the header of `scripts/vla_sim_eval.py` (LIBERO on macOS needs a
+manual install of its dependencies). Run long evaluations under `caffeinate -is` and
+detached with `nohup`: the Mac's idle sleep stalls them.
 
 Profiling the wgpu engine: `SAPIENT_WGPU_TIMING=1 sapient chat <model> --backend wgpu -p "…"`
 prints CPU recording vs GPU time per token; `SAPIENT_WGPU_SHARED_PASS=0` reverts to one

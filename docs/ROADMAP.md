@@ -75,7 +75,9 @@
   **Real data + async (2026-10-02):** 24 real SO-100 frames — `exact` = LeRobot to 2e-6,
   `fast` RMS 0.019 vs LeRobot-bf16 0.011, offline prediction error unchanged by any
   mode; `AsyncActions` + `sapient act --simulate` — stall-free at 30 Hz on M4 and 5 Hz
-  on Pi 5. Open VLA rungs: a fine-tuned checkpoint + simulator for task success, the
+  on Pi 5. **Task success (2026-10-03):** LIBERO-Spatial, `HuggingFaceVLA/smolvla_libero`:
+  LeRobot f32 24/50, Sapient `fast` 28/50, `balanced` 26/50 (paired p ≥ 0.29). Open VLA
+  rungs: simulated inference delay (sync vs async) in LIBERO, more suites, the
   expert's per-step overhead, jitter under load (latency-aware async threshold shipped:
   `--threshold auto` matches the best fixed setting at 5–30 Hz on M4 and Pi 5),
   asynchronous chunk execution, a real dataset and task success, a fine-tuned checkpoint
