@@ -630,11 +630,11 @@ cargo build --release -p sapient-cli
 # 3) See which models are supported
 ./target/release/sapient models
 
-# 4) Chat! (downloads the model the first time)
-./target/release/sapient chat openhorizon/phi-2
-
 # Apple Silicon GPU build (optional, macOS only):
 cargo build --release -p sapient-cli --features mlx
+
+# 4) Chat! (downloads the model the first time; interactive — /exit to quit)
+./target/release/sapient chat openhorizon/phi-2
 ```
 
 Useful chat commands while chatting: `/help`, `/clear` (forget the conversation), `/exit`.

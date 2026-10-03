@@ -39,8 +39,8 @@ vision in one self-contained binary.
 ```bash
 curl -fsSL https://github.com/openhorizon-labs/sapient/releases/latest/download/install.sh | sh
 
-# chat (downloads the model on first run)
-sapient chat qwen2.5-0.5b-q4
+# one chat reply (downloads the model on first run); drop -p for an interactive chat
+sapient chat qwen2.5-0.5b-q4 -p "Hello! What can you do?"
 # speech → text
 sapient transcribe whisper-base recording.wav
 # text → speech
@@ -111,6 +111,10 @@ Grab a pre-built binary for your platform from the [**latest release**](https://
 
 Run `sapient models` to see every supported model, and `sapient <command> --help` for
 all flags.
+
+Each block below lists separate examples — run them one at a time. `chat` without
+`-p`, `serve`, `converse` and `stats` keep running until you exit them (`/exit` or
+Ctrl-C), so anything pasted after them waits.
 
 Pasting these blocks into zsh (the macOS default shell): zsh does not treat `#` as a
 comment unless `setopt interactivecomments` is set, so the `# …` lines print
@@ -184,9 +188,16 @@ sapient act camera.jpg --task "pick up the red cube" --state "0.1,0.2,-0.3,0.4,0
 sapient act top.jpg wrist.jpg --task "pick up the red cube" --json
 # or: exact
 sapient act camera.jpg --task "pick up the red cube" --precision balanced
+```
 
-# Keep the policy loaded and call it over HTTP
+Keep the policy loaded and call it over HTTP. `serve` keeps running, so send requests
+from a second terminal:
+
+```bash
 sapient serve lerobot/smolvla_base
+```
+
+```bash
 curl localhost:11435/v1/actions -H 'Content-Type: application/json' -d '{
   "task": "pick up the red cube",
   "images": ["data:image/jpeg;base64,..."],
@@ -659,16 +670,17 @@ Whisper.
 
 ```bash
 cargo build --release -p sapient-cli --features wgpu
-./target/release/sapient chat openhorizon/qwen2.5-0.5b --backend wgpu
+./target/release/sapient chat openhorizon/qwen2.5-0.5b --backend wgpu -p "Say hello in five words."
 
 # time cpu vs wgpu (vs metal on a Mac) on your machine
 python3 scripts/bench_wgpu.py
 python3 scripts/bench_wgpu.py --model openhorizon/qwen2.5-1.5b --tokens 128
 ```
 
-Where it stands: on a strong CPU it is not the fastest path (Apple M4: 14.3 tok/s on
-Qwen2.5-1.5B through wgpu, against 40–50 on the CPU engine and 82 on the `-metal`
-build). Its value is running quantized models on non-Apple GPUs and on small-VRAM
+Where it stands: on a strong CPU it is not the fastest path for 4-bit models (Apple
+M4, v0.6.2: about 34 tok/s on Qwen2.5-1.5B Q4_K_M through wgpu, against 48–58 on the
+CPU engine and 82 on the `-metal` build; Qwen2.5-0.5B full precision is on par with the
+CPU at about 43). Its value is running quantized models on non-Apple GPUs and on small-VRAM
 cards. Intel Arc and AMD Radeon numbers are still unmeasured — datapoints welcome
 (`scripts/bench_gpu_7_6.sh`).
 

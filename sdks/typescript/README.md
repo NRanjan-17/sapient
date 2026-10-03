@@ -12,11 +12,13 @@ same API, no server process. See
 ## Install & run
 
 ```bash
-# 1. Start the engine (any machine on your network)
+# 1. Start the engine (any machine on your network; keeps running)
 # listens on 127.0.0.1:11435
 sapient serve
+```
 
-# 2. In your app
+```bash
+# 2. In your app (another terminal)
 npm install @openhorizon-labs/sapient
 ```
 
